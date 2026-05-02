@@ -29,15 +29,20 @@ defaults; adjust if you store things elsewhere.
 
 ## 4. Generate an SSH deploy key for git
 
+Run on the **Unraid host** (web UI terminal `>_`, or `ssh root@<unraid-ip>`):
+
 ```sh
+mkdir -p /mnt/user/appdata/opencode/ssh
 ssh-keygen -t ed25519 -N "" -f /mnt/user/appdata/opencode/ssh/id_ed25519 \
   -C "opencode-server@$(hostname)"
 chmod 600 /mnt/user/appdata/opencode/ssh/id_ed25519
+chmod 644 /mnt/user/appdata/opencode/ssh/id_ed25519.pub
+cat /mnt/user/appdata/opencode/ssh/id_ed25519.pub
 ```
 
-Add the contents of `/mnt/user/appdata/opencode/ssh/id_ed25519.pub` to GitHub:
-- Per-repo: Settings → Deploy keys → Add deploy key (write access if you'll push)
-- Or as a personal SSH key: Settings → SSH and GPG keys → New SSH key
+The `cat` prints the public key. Copy the whole line and add it to GitHub:
+- **Per-repo deploy key** (recommended): repo → Settings → Deploy keys → Add deploy key. Tick "Allow write access" if you want the agent to `git push`.
+- **Personal SSH key** (simpler for many repos): GitHub profile → Settings → SSH and GPG keys → New SSH key.
 
 ## 5. Generate the `.env` file
 
