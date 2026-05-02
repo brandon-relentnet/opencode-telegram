@@ -81,19 +81,24 @@ git clone git@github.com:you/blog.git
 git clone https://github.com/brandon-relentnet/opencode-telegram.git \
   /mnt/user/appdata/opencode/repo
 cd /mnt/user/appdata/opencode/repo
+
+# Symlink the .env file so every `docker compose` command picks it up
+# automatically (otherwise you'd have to pass --env-file to each one).
+ln -sf /mnt/user/appdata/opencode/.env .env
+
 docker compose -f deploy/compose.yaml build
 ```
 
-> Unraid doesn't ship `make` by default, so the `Makefile` targets won't work
-> out of the box. Either install the NerdTools plugin from Community Apps and
-> enable `make`, or use the equivalent `docker compose` commands directly
+> Unraid doesn't ship `make` by default, and Docker Compose v2 isn't included
+> either. Install the **Compose Manager** plugin from Community Apps to get
+> `docker compose`. Optionally install **NerdTools** if you want `make`
+> available too. Without `make`, use the `docker compose` commands directly
 > (shown below).
 
 ## 8. Start the stack
 
 ```sh
-docker compose -f deploy/compose.yaml \
-  --env-file /mnt/user/appdata/opencode/.env up -d
+docker compose -f deploy/compose.yaml up -d
 
 docker compose -f deploy/compose.yaml logs -f --tail=200
 ```
