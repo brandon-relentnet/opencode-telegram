@@ -62,6 +62,20 @@ describe("renderParts", () => {
     expect(out).toContain("truncated");
   });
 
+  it("renders an errored tool with the error message visible", () => {
+    const parts: RenderablePart[] = [
+      {
+        type: "tool",
+        tool: "bash",
+        state: { status: "error", input: { command: "missing-cmd" }, error: "command not found" },
+      },
+    ];
+    const out = renderParts(parts);
+    expect(out).toContain("_called `bash`");
+    expect(out).toContain("❌");
+    expect(out).toContain("command not found");
+  });
+
   it("renders a pending tool call without a result block", () => {
     const parts: RenderablePart[] = [
       {

@@ -24,6 +24,7 @@ interface ToolState {
   status: "pending" | "running" | "completed" | "error";
   input?: unknown;
   output?: string;
+  error?: string;
 }
 
 export type RenderablePart =
@@ -62,6 +63,11 @@ function renderToolPart(tool: string, state: ToolState): string {
   // Italic via _ ... _; inline code via backticks (which don't need to be escaped
   // inside the surrounding italic since they delimit a code entity in MarkdownV2).
   const header = `_called \`${escapedTool}\`${escapedSummary}_`;
+
+  if (state.status === "error") {
+    const errMsg = state.error ?? "tool failed";
+    return `${header}\n❌ ${escapeMarkdownV2(errMsg)}`;
+  }
 
   const output = state.output ?? "";
   if (state.status !== "completed" || output.length === 0) {
