@@ -82,9 +82,18 @@ git clone https://github.com/brandon-relentnet/opencode-telegram.git \
   /mnt/user/appdata/opencode/repo
 cd /mnt/user/appdata/opencode/repo
 
-# Symlink the .env file so every `docker compose` command picks it up
-# automatically (otherwise you'd have to pass --env-file to each one).
-ln -sf /mnt/user/appdata/opencode/.env .env
+# Symlink the .env file *next to the compose file* so every
+# `docker compose` command picks it up automatically. Compose's
+# default discovery looks in the project directory (deploy/), not
+# in your shell's cwd.
+ln -sf /mnt/user/appdata/opencode/.env deploy/.env
+
+# Pre-create the bridge's data directory with the right ownership.
+# The tg-bridge container runs as UID 1001 (non-root); without this,
+# Docker creates the bind-mount target as root and SQLite fails to
+# open the database file.
+mkdir -p /mnt/user/appdata/opencode/bridge
+chown -R 1001:1001 /mnt/user/appdata/opencode/bridge
 
 docker compose -f deploy/compose.yaml build
 ```
