@@ -1,4 +1,5 @@
 import { Bot, type Context } from "grammy";
+import { autoRetry } from "@grammyjs/auto-retry";
 import pino from "pino";
 import { loadConfig } from "./config.js";
 import { whitelistMiddleware } from "./auth.js";
@@ -34,6 +35,10 @@ async function main(): Promise<void> {
   const router = new EventRouter(client, log);
 
   const bot = new Bot(config.telegramBotToken);
+
+  // Globally handle Telegram 429 (rate limit) responses by honouring the
+  // server-provided retry_after, with sane bounds so we don't stall forever.
+  bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 5 }));
 
   // Adapter for Turn: TurnBot expects a strict { parse_mode: "MarkdownV2" }
   // options shape; bot.api accepts a wider Other<...> type, so a thin closure

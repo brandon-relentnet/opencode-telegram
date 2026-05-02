@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
@@ -13,6 +15,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.2",
     "@opencode-ai/sdk": "^1.14.0",
     "better-sqlite3": "^12.9.0",
     "grammy": "^1.30.0",
