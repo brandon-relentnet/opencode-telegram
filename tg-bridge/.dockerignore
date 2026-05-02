@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+*.sqlite
+*.sqlite-journal
+.vscode
+.idea
+.git
+tests
