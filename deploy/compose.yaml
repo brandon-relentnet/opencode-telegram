@@ -1,0 +1,68 @@
+name: opencode-server
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+networks:
+  opencode-net:
+    driver: bridge
+
+services:
+  opencode:
+    build:
+      context: ../opencode-image
+      args:
+        INSTALL_GO_LSP: ${INSTALL_GO_LSP:-false}
+        INSTALL_RUST_LSP: ${INSTALL_RUST_LSP:-false}
+    image: opencode-server:local
+    container_name: opencode
+    restart: unless-stopped
+    networks: [opencode-net]
+    ports:
+      # Host-published so the Tailscale plugin can serve it on the tailnet.
+      # Keep bound to all interfaces; firewall the host appropriately.
+      - "4096:4096"
+    environment:
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_USERNAME:-opencode}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:?required}
+    volumes:
+      - ${WORKSPACE_HOST_PATH:?required}:/workspace
+      - ${APPDATA_HOST_PATH:?required}/data:/root/.local/share/opencode
+      - ${APPDATA_HOST_PATH:?required}/config:/root/.config/opencode
+      - ${APPDATA_HOST_PATH:?required}/ssh:/root/.ssh:ro
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+          cpus: "2.0"
+    logging: *default-logging
+
+  tg-bridge:
+    build:
+      context: ../tg-bridge
+    image: tg-bridge:local
+    container_name: tg-bridge
+    restart: unless-stopped
+    depends_on: [opencode]
+    networks: [opencode-net]
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?required}
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:?required}
+      OPENCODE_URL: http://opencode:4096
+      OPENCODE_USERNAME: ${OPENCODE_USERNAME:-opencode}
+      OPENCODE_PASSWORD: ${OPENCODE_SERVER_PASSWORD:?required}
+      WORKSPACE_ROOT: /workspace
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # The bridge needs to see the same workspace mount to validate /switch.
+      - ${WORKSPACE_HOST_PATH:?required}:/workspace:ro
+      - ${APPDATA_HOST_PATH:?required}/bridge:/data
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+    logging: *default-logging

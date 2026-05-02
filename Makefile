@@ -1,4 +1,4 @@
-.PHONY: help build up down logs restart shell-bridge shell-opencode test typecheck lint
+.PHONY: help build up up-unraid down logs restart shell-bridge shell-opencode test typecheck lint
 
 help:
 	@echo "Targets:"
@@ -17,6 +17,9 @@ build:
 
 up:
 	docker compose -f deploy/compose.yaml --env-file deploy/.env up -d
+
+up-unraid:
+	docker compose -f deploy/compose.yaml --env-file /mnt/user/appdata/opencode/.env up -d
 
 down:
 	docker compose -f deploy/compose.yaml down
