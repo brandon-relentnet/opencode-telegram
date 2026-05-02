@@ -136,6 +136,30 @@ describe("handleTextMessage", () => {
     expect(router.unregister).toHaveBeenCalled();
   });
 
+  it("normalizes object-shaped errors when prompt rejects", async () => {
+    state.setProject(1, "/workspace/a", "ses_a");
+    const ctx = makeFakeCtx({ chatId: 1, text: "x" });
+    ctx.reply.mockResolvedValue({ message_id: 555 });
+    const router = makeRouter();
+    // Simulate ApiError-like rejection (plain object with message field).
+    const client = makeClient(async () => {
+      // eslint-disable-next-line no-throw-literal
+      throw { name: "ApiError", message: "rate limited", status: 429 };
+    });
+    const bot = makeBot();
+    await handleTextMessage(ctx as never, {
+      state,
+      client,
+      router,
+      bot,
+      permissions: { sendRequest: vi.fn() } as never,
+    });
+    const args = bot.editMessageText.mock.calls[0]!;
+    const text = String(args[2]);
+    expect(text).toContain("rate limited");
+    expect(text).not.toContain("[object Object]");
+  });
+
   it("permission events route to PermissionService.sendRequest", async () => {
     state.setProject(1, "/workspace/a", "ses_a");
     const ctx = makeFakeCtx({ chatId: 1, text: "x" });

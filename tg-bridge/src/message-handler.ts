@@ -24,6 +24,29 @@ interface IncomingTextPart {
   state?: { status: string; input?: unknown; output?: string };
 }
 
+/**
+ * Convert any thrown value into a human-readable string. The opencode SDK
+ * rejects with discriminated-union plain objects (e.g. `ApiError`) that are
+ * not `Error` instances, so `String(err)` produces "[object Object]".
+ */
+function describeError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (
+    err &&
+    typeof err === "object" &&
+    "message" in err &&
+    typeof (err as { message: unknown }).message === "string"
+  ) {
+    return (err as { message: string }).message;
+  }
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return "unknown error";
+  }
+}
+
 function parseModel(modelId: string): { providerID: string; modelID: string } | undefined {
   const idx = modelId.indexOf("/");
   if (idx <= 0 || idx === modelId.length - 1) return undefined;
@@ -69,7 +92,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       }
     },
     async onError(err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = describeError(err);
       await turn.showError(msg);
       if (!unregistered) {
         unregistered = true;
@@ -87,7 +110,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
   try {
     await deps.client.prompt(sessionId, text, model ? { model } : undefined);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = describeError(err);
     await turn.showError(`prompt failed: ${msg}`);
     if (!unregistered) {
       unregistered = true;
