@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+
+# build artifacts
+dist/
+*.tsbuildinfo
+
+# secrets
+.env
+.env.local
+deploy/.env
+
+# local data
+*.sqlite
+*.sqlite-journal
+
+# editor
+.DS_Store
+.vscode/
+.idea/
