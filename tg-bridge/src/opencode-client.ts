@@ -68,6 +68,13 @@ export interface BridgeOpencodeClient {
 }
 
 /**
+ * Alias for downstream consumers. The plan and downstream tasks reference
+ * this name; the implementation is `BridgeOpencodeClient`. Both names refer
+ * to the same shape; use either.
+ */
+export type OpencodeClient = BridgeOpencodeClient;
+
+/**
  * Adapt a standard `(input, init)` fetch into the SDK's expected
  * `(request: Request) => ReturnType<typeof fetch>` shape. We re-issue the
  * request through `inner` so the auth wrapper still applies.
