@@ -36,4 +36,4 @@ test:
 	cd tg-bridge && npm test
 
 typecheck:
-	cd tg-bridge && npx tsc --noEmit
+	cd tg-bridge && npm run typecheck
