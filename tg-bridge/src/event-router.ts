@@ -1,3 +1,4 @@
+import type { Logger } from "pino";
 import type { OpencodeClient } from "./opencode-client.js";
 
 export interface SessionEventHandler {
@@ -12,10 +13,15 @@ interface RawEvent {
   properties?: Record<string, unknown> & { sessionID?: string };
 }
 
+type EventLogger = Pick<Logger, "warn">;
+
 export class EventRouter {
   private handlers = new Map<string, SessionEventHandler>();
 
-  constructor(private client: OpencodeClient) {}
+  constructor(
+    private client: OpencodeClient,
+    private log?: EventLogger,
+  ) {}
 
   registerSession(sessionId: string, handler: SessionEventHandler): () => void {
     this.handlers.set(sessionId, handler);
@@ -45,9 +51,17 @@ export class EventRouter {
   }
 
   private dispatch(evt: RawEvent): void {
-    const sessionId =
-      typeof evt.properties?.sessionID === "string" ? evt.properties.sessionID : undefined;
-    if (!sessionId) return;
+    // Per the SDK, only some event types carry a top-level `properties.sessionID`.
+    // For `message.part.updated`, the sessionID lives on `properties.part.sessionID`.
+    const sessionId = this.extractSessionId(evt);
+    if (!sessionId) {
+      // Known event type with no routable sessionID — surface it so we don't lose
+      // infrastructure-level errors (e.g. session.error without a sessionID) silently.
+      if (this.isKnownType(evt.type)) {
+        this.log?.warn({ eventType: evt.type }, "unrouted opencode event");
+      }
+      return;
+    }
     const handler = this.handlers.get(sessionId);
     if (!handler) return;
 
@@ -71,6 +85,24 @@ export class EventRouter {
       default:
         return; // ignore other event types in Phase 1
     }
+  }
+
+  private extractSessionId(evt: RawEvent): string | undefined {
+    if (evt.type === "message.part.updated") {
+      const part = (evt.properties as { part?: { sessionID?: string } } | undefined)?.part;
+      return typeof part?.sessionID === "string" ? part.sessionID : undefined;
+    }
+    const direct = evt.properties?.sessionID;
+    return typeof direct === "string" ? direct : undefined;
+  }
+
+  private isKnownType(type: string): boolean {
+    return (
+      type === "message.part.updated" ||
+      type === "session.idle" ||
+      type === "session.error" ||
+      type === "permission.updated"
+    );
   }
 
   private sleep(ms: number, signal: AbortSignal): Promise<void> {

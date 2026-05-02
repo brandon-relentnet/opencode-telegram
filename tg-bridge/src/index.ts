@@ -31,7 +31,7 @@ async function main(): Promise<void> {
     password: config.opencodePassword,
   });
 
-  const router = new EventRouter(client);
+  const router = new EventRouter(client, log);
 
   const bot = new Bot(config.telegramBotToken);
 

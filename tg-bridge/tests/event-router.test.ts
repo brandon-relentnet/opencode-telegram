@@ -86,11 +86,20 @@ describe("EventRouter", () => {
 
     pushable.push({
       type: "message.part.updated",
-      properties: { sessionID: "ses_1", part: { type: "text", text: "hi" } },
+      properties: {
+        part: { id: "prt_1", sessionID: "ses_1", messageID: "msg_1", type: "text", text: "hi" },
+        delta: "hi",
+      },
     });
 
     await new Promise((r) => setImmediate(r));
-    expect(handler.onPartUpdated).toHaveBeenCalledWith({ type: "text", text: "hi" });
+    expect(handler.onPartUpdated).toHaveBeenCalledWith({
+      id: "prt_1",
+      sessionID: "ses_1",
+      messageID: "msg_1",
+      type: "text",
+      text: "hi",
+    });
 
     ac.abort();
     pushable.end();
@@ -106,7 +115,10 @@ describe("EventRouter", () => {
 
     pushable.push({
       type: "message.part.updated",
-      properties: { sessionID: "ses_unknown", part: { type: "text", text: "hi" } },
+      properties: {
+        part: { id: "prt_x", sessionID: "ses_unknown", messageID: "msg_x", type: "text", text: "hi" },
+        delta: "hi",
+      },
     });
     await new Promise((r) => setImmediate(r));
     // No throw, no crash.
@@ -166,6 +178,49 @@ describe("EventRouter", () => {
     await runPromise;
   });
 
+  it("logs a warning when a known event type has no routable sessionID", async () => {
+    const pushable = makePushable<unknown>();
+    const client = makeClientWithStream(pushable.iterable());
+    const log = { warn: vi.fn() };
+    const router = new EventRouter(client, log);
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal);
+
+    // session.error with no sessionID — must not be silently dropped.
+    pushable.push({
+      type: "session.error",
+      properties: { error: { name: "ApiError", message: "infra failure" } },
+    });
+    await new Promise((r) => setImmediate(r));
+
+    expect(log.warn).toHaveBeenCalledWith(
+      { eventType: "session.error" },
+      "unrouted opencode event",
+    );
+
+    ac.abort();
+    pushable.end();
+    await runPromise;
+  });
+
+  it("does not warn for unknown/ignored event types with no sessionID", async () => {
+    const pushable = makePushable<unknown>();
+    const client = makeClientWithStream(pushable.iterable());
+    const log = { warn: vi.fn() };
+    const router = new EventRouter(client, log);
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal);
+
+    pushable.push({ type: "server.connected", properties: {} });
+    await new Promise((r) => setImmediate(r));
+
+    expect(log.warn).not.toHaveBeenCalled();
+
+    ac.abort();
+    pushable.end();
+    await runPromise;
+  });
+
   it("unregister stops further dispatch to the handler", async () => {
     const pushable = makePushable<unknown>();
     const client = makeClientWithStream(pushable.iterable());
@@ -178,7 +233,10 @@ describe("EventRouter", () => {
     unregister();
     pushable.push({
       type: "message.part.updated",
-      properties: { sessionID: "ses_1", part: { type: "text", text: "x" } },
+      properties: {
+        part: { id: "prt_y", sessionID: "ses_1", messageID: "msg_y", type: "text", text: "x" },
+        delta: "x",
+      },
     });
     await new Promise((r) => setImmediate(r));
     expect(handler.onPartUpdated).not.toHaveBeenCalled();
