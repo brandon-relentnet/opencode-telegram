@@ -78,17 +78,27 @@ git clone git@github.com:you/blog.git
 ## 7. Clone this project somewhere on Unraid and build
 
 ```sh
-git clone <this-repo-url> /mnt/user/appdata/opencode/repo
+git clone https://github.com/brandon-relentnet/opencode-telegram.git \
+  /mnt/user/appdata/opencode/repo
 cd /mnt/user/appdata/opencode/repo
-make build
+docker compose -f deploy/compose.yaml build
 ```
+
+> Unraid doesn't ship `make` by default, so the `Makefile` targets won't work
+> out of the box. Either install the NerdTools plugin from Community Apps and
+> enable `make`, or use the equivalent `docker compose` commands directly
+> (shown below).
 
 ## 8. Start the stack
 
 ```sh
-make up-unraid
-make logs
+docker compose -f deploy/compose.yaml \
+  --env-file /mnt/user/appdata/opencode/.env up -d
+
+docker compose -f deploy/compose.yaml logs -f --tail=200
 ```
+
+(With `make` installed, these are just `make up-unraid && make logs`.)
 
 You should see opencode logging that it's listening on `:4096` and
 tg-bridge logging "starting" with no errors.
