@@ -47,7 +47,7 @@ describe("loadConfig", () => {
   });
 
   it("rejects unknown log level", () => {
-    expect(() => loadConfig({ ...validEnv, LOG_LEVEL: "yelling" })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...validEnv, LOG_LEVEL: "yelling" })).toThrow(/LOG_LEVEL/);
   });
 
   it("accepts custom OPENCODE_URL and WORKSPACE_ROOT", () => {
@@ -58,5 +58,19 @@ describe("loadConfig", () => {
     });
     expect(cfg.opencodeUrl).toBe("http://example.local:9000");
     expect(cfg.workspaceRoot).toBe("/data/code");
+  });
+
+  it("rejects an invalid OPENCODE_URL", () => {
+    expect(() => loadConfig({ ...validEnv, OPENCODE_URL: "not a url" })).toThrow(ConfigError);
+  });
+
+  it("trims whitespace and BOM-free padding on scalar env vars", () => {
+    const cfg = loadConfig({
+      ...validEnv,
+      TELEGRAM_BOT_TOKEN: "  123:abc  ",
+      OPENCODE_PASSWORD: "\tsecret\n",
+    });
+    expect(cfg.telegramBotToken).toBe("123:abc");
+    expect(cfg.opencodePassword).toBe("secret");
   });
 });

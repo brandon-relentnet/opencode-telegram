@@ -7,6 +7,16 @@ export class ConfigError extends Error {
   }
 }
 
+export const LOG_LEVELS = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
+const trimmedNonEmpty = (msg: string) =>
+  z
+    .string()
+    .transform((s) => s.trim())
+    .pipe(z.string().min(1, msg));
+
+// Note: Telegram user IDs > 2^53 lose precision via JSON.parse, matching grammy's Context["from"]["id"]: number contract.
 const userIdList = z
   .string()
   .min(1)
@@ -29,7 +39,7 @@ const userIdList = z
     if (ids.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "TELEGRAM_ALLOWED_USER_IDS must contain at least one ID",
+        message: "must contain at least one ID",
       });
       return z.NEVER;
     }
@@ -37,13 +47,13 @@ const userIdList = z
   });
 
 const Schema = z.object({
-  TELEGRAM_BOT_TOKEN: z.string().min(1, "TELEGRAM_BOT_TOKEN is required"),
+  TELEGRAM_BOT_TOKEN: trimmedNonEmpty("TELEGRAM_BOT_TOKEN is required"),
   TELEGRAM_ALLOWED_USER_IDS: userIdList,
   OPENCODE_URL: z.string().url().default("http://opencode:4096"),
-  OPENCODE_USERNAME: z.string().min(1).default("opencode"),
-  OPENCODE_PASSWORD: z.string().min(1, "OPENCODE_PASSWORD is required"),
+  OPENCODE_USERNAME: trimmedNonEmpty("OPENCODE_USERNAME is required").default("opencode"),
+  OPENCODE_PASSWORD: trimmedNonEmpty("OPENCODE_PASSWORD is required"),
   WORKSPACE_ROOT: z.string().min(1).default("/workspace"),
-  LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
+  LOG_LEVEL: z.enum(LOG_LEVELS).default("info"),
 });
 
 export interface Config {
@@ -53,7 +63,7 @@ export interface Config {
   opencodeUsername: string;
   opencodePassword: string;
   workspaceRoot: string;
-  logLevel: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
+  logLevel: LogLevel;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
