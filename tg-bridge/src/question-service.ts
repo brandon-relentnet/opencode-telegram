@@ -272,9 +272,74 @@ export class QuestionService {
       return true;
     }
 
-    // Unknown action — log and ignore. (Future tasks add custom.)
+    if (action === "custom") {
+      if (state.done) {
+        await this.bot.answerCallbackQuery(cb.id, { text: "Already answered" }).catch(() => undefined);
+        return true;
+      }
+      this.awaiting.set(entry.chatId, { requestId, questionIdx: qIdx });
+      await this.bot
+        .answerCallbackQuery(cb.id, { text: "Type your custom answer in the next message" })
+        .catch(() => undefined);
+      return true;
+    }
+
+    // Unknown action — log and ignore.
     this.log?.warn?.({ action }, "unknown qst callback action; ignoring");
     return true;
+  }
+
+  isAwaitingCustomAnswer(chatId: number): boolean {
+    return this.awaiting.has(chatId);
+  }
+
+  async handleCustomAnswer(chatId: number, text: string): Promise<void> {
+    const ctx = this.awaiting.get(chatId);
+    if (!ctx) return;
+    this.awaiting.delete(chatId);
+    const entry = this.pending.get(ctx.requestId);
+    if (!entry || entry.resolved) return;
+    if (ctx.questionIdx < 0 || ctx.questionIdx >= entry.questions.length) return;
+    const q = entry.questions[ctx.questionIdx]!;
+    const state = entry.questionStates[ctx.questionIdx]!;
+    if (state.done) return;
+
+    if (q.multiple === true) {
+      // Multi-select: append to customAnswers, leave pending until Done
+      state.customAnswers.push(text);
+      // Re-render keyboard message body to include the new custom answer
+      if (state.messageId !== null) {
+        await this.bot
+          .editMessageText(
+            entry.chatId,
+            state.messageId,
+            this.renderQuestionMessage(q, state),
+            {
+              parse_mode: "MarkdownV2",
+              reply_markup: { inline_keyboard: this.buildKeyboard(ctx.requestId, ctx.questionIdx, q, state) },
+            },
+          )
+          .catch((err) => this.log?.warn?.({ err }, "editMessageText (custom-multi) failed"));
+      }
+      return;
+    }
+
+    // Single-select: replace selected with the custom answer, mark done, submit if all done
+    state.selected = [];
+    state.customAnswers = [text];
+    state.done = true;
+    if (state.messageId !== null) {
+      await this.bot
+        .editMessageText(
+          entry.chatId,
+          state.messageId,
+          this.renderAnsweredMessage(q, state),
+          { parse_mode: "MarkdownV2" },
+        )
+        .catch((err) => this.log?.warn?.({ err }, "editMessageText (custom-single) failed"));
+    }
+    const allDone = entry.questionStates.every((s) => s.done);
+    if (allDone) await this.submitAll(entry);
   }
 
   private async submitAll(entry: PendingRequest): Promise<void> {
@@ -354,10 +419,16 @@ export class QuestionService {
     }
   }
 
-  private renderQuestionMessage(q: QuestionInfo, _state: PerQuestionState): string {
-    // V1: just the header + question text. Multi-select state markers
-    // will be rendered into this in Task 5 once `tgl` action is added.
-    return `*${escapeMarkdownV2(q.header)}*\n${escapeMarkdownV2(q.question)}`;
+  private renderQuestionMessage(q: QuestionInfo, state: PerQuestionState): string {
+    const lines: string[] = [
+      `*${escapeMarkdownV2(q.header)}*`,
+      escapeMarkdownV2(q.question),
+    ];
+    // Show custom-typed answers (multi-select shows them inline above the keyboard)
+    for (const c of state.customAnswers) {
+      lines.push(`_${escapeMarkdownV2(`Custom: "${c}"`)}_`);
+    }
+    return lines.join("\n");
   }
 
   private renderAnsweredMessage(q: QuestionInfo, state: PerQuestionState): string {

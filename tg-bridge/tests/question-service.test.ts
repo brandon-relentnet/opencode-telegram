@@ -457,3 +457,117 @@ describe("QuestionService — multi-select", () => {
     expect(client._replies[0]).toEqual({ requestId: "qst_m5", answers: [[]] });
   });
 });
+
+describe("QuestionService — custom answers", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("on custom callback, sets awaiting state and toasts the user", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_c1",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick",
+          header: "H",
+          options: [{ label: "A", description: "" }],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    expect(service.isAwaitingCustomAnswer(42)).toBe(false);
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_c1:0:custom",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    expect(service.isAwaitingCustomAnswer(42)).toBe(true);
+    expect(bot.answerCallbackQuery).toHaveBeenCalledWith(
+      "cb1",
+      expect.objectContaining({ text: expect.stringMatching(/type|custom/i) }),
+    );
+  });
+
+  it("handleCustomAnswer in single-select replaces selected, marks done, submits", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_c2",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick",
+          header: "H",
+          options: [{ label: "A", description: "" }],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_c2:0:custom",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    await service.handleCustomAnswer(42, "I want X instead");
+    expect(client._replies).toHaveLength(1);
+    expect(client._replies[0]).toEqual({ requestId: "qst_c2", answers: [["I want X instead"]] });
+    // Awaiting cleared
+    expect(service.isAwaitingCustomAnswer(42)).toBe(false);
+  });
+
+  it("handleCustomAnswer in multi-select appends to customAnswers, leaves question pending", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_c3",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick",
+          header: "H",
+          multiple: true,
+          options: [{ label: "A", description: "" }],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    // Toggle A
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_c3:0:tgl:0",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    // Custom answer
+    await service.handleCallback({
+      id: "cb2",
+      data: "qst:qst_c3:0:custom",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    await service.handleCustomAnswer(42, "Custom thing");
+    // Not yet submitted
+    expect(client._replies).toHaveLength(0);
+    expect(service.isAwaitingCustomAnswer(42)).toBe(false);
+    // Done
+    await service.handleCallback({
+      id: "cb3",
+      data: "qst:qst_c3:0:done",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    expect(client._replies).toHaveLength(1);
+    expect(client._replies[0]).toEqual({ requestId: "qst_c3", answers: [["A", "Custom thing"]] });
+  });
+
+  it("handleCustomAnswer when not awaiting is a no-op", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    await service.handleCustomAnswer(42, "should be ignored");
+    expect(client._replies).toHaveLength(0);
+  });
+});
