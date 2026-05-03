@@ -78,6 +78,7 @@ async function main(): Promise<void> {
 
   const permissions = new PermissionService(permBot as never, client, {
     timeoutMs: PERMISSION_TIMEOUT_MS,
+    log,
   });
 
   // 1) Whitelist gate runs before everything else.
@@ -122,6 +123,7 @@ async function main(): Promise<void> {
       permissions,
       bot: turnBot,
       defaultModel: config.defaultModel,
+      log,
     }),
   );
 

@@ -1,4 +1,5 @@
 import type { Context } from "grammy";
+import type { Logger } from "pino";
 import { escapeMarkdownV2 } from "./format.js";
 import { Turn, type TurnBot } from "./turn.js";
 import { describeError } from "./errors.js";
@@ -21,6 +22,12 @@ export interface MessageHandlerDeps {
    * Format: "<providerID>/<modelID>" (e.g. "anthropic/claude-sonnet-4-5").
    */
   defaultModel: string;
+  /**
+   * Optional logger. When present, the handler logs permission-event
+   * receipts and any errors that occur dispatching them. Without this,
+   * silent failures in permission delivery are very hard to debug.
+   */
+  log?: Pick<Logger, "info" | "warn" | "error">;
 }
 
 interface IncomingTextPart {
@@ -78,7 +85,19 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       }
     },
     onPermissionUpdated(perm) {
-      void deps.permissions.sendRequest(chatId, sessionId, perm as never);
+      // Log receipt so silent permission delivery failures aren't a mystery.
+      // We `.catch` instead of `void` so rejections from sendRequest land in
+      // the bridge log rather than as unhandled promise rejections.
+      const permId = (perm as { id?: string })?.id;
+      deps.log?.info({ chatId, sessionId, permId }, "permission event received");
+      deps.permissions
+        .sendRequest(chatId, sessionId, perm as never)
+        .catch((err) => {
+          deps.log?.error(
+            { chatId, sessionId, permId, err: describeError(err) },
+            "failed to send permission prompt to telegram",
+          );
+        });
     },
   };
 

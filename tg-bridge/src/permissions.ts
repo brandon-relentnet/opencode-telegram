@@ -1,3 +1,4 @@
+import type { Logger } from "pino";
 import { escapeMarkdownV2 } from "./format.js";
 import type { OpencodeClient } from "./opencode-client.js";
 
@@ -67,6 +68,11 @@ export interface CallbackQuery {
 
 export interface PermissionServiceOptions {
   timeoutMs: number;
+  /**
+   * Optional logger for diagnostic output. Highly recommended in
+   * production — silent failures here are very hard to debug otherwise.
+   */
+  log?: Pick<Logger, "info" | "warn" | "error">;
 }
 
 interface Pending {
@@ -88,18 +94,35 @@ export class PermissionService {
 
   async sendRequest(chatId: number, sessionId: string, perm: PermissionRequest): Promise<void> {
     const text = renderPermissionPrompt(perm);
-    const sent = await this.bot.sendMessage(chatId, text, {
-      parse_mode: "MarkdownV2",
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: "✅ Once", callback_data: `perm:${perm.id}:once` },
-            { text: "✓ Always", callback_data: `perm:${perm.id}:always` },
-            { text: "❌ Deny", callback_data: `perm:${perm.id}:deny` },
+    this.options.log?.info(
+      { chatId, sessionId, permId: perm.id, kind: perm.permission ?? perm.type, textLen: text.length },
+      "sending permission prompt to telegram",
+    );
+    let sent: { message_id: number };
+    try {
+      sent = await this.bot.sendMessage(chatId, text, {
+        parse_mode: "MarkdownV2",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✅ Once", callback_data: `perm:${perm.id}:once` },
+              { text: "✓ Always", callback_data: `perm:${perm.id}:always` },
+              { text: "❌ Deny", callback_data: `perm:${perm.id}:deny` },
+            ],
           ],
-        ],
-      },
-    });
+        },
+      });
+    } catch (err) {
+      this.options.log?.error(
+        { chatId, sessionId, permId: perm.id, err: err instanceof Error ? err.message : String(err) },
+        "bot.sendMessage failed for permission prompt",
+      );
+      throw err;
+    }
+    this.options.log?.info(
+      { chatId, sessionId, permId: perm.id, messageId: sent.message_id },
+      "permission prompt sent",
+    );
 
     const timer = setTimeout(() => {
       void this.autoDeny(perm.id);
