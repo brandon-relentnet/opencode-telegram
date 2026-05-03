@@ -99,3 +99,55 @@ describe("ChatStateRepo", () => {
     });
   });
 });
+
+describe("ChatStateRepo coolify_app", () => {
+  it("returns null when no coolify app set for (chat, project)", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    expect(repo.getCoolifyApp(1, "/workspace/x")).toBeNull();
+  });
+
+  it("setCoolifyApp + getCoolifyApp roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.setCoolifyApp(1, "/workspace/site", "abc-123", "site.example.com");
+    expect(repo.getCoolifyApp(1, "/workspace/site")).toEqual({
+      uuid: "abc-123",
+      fqdn: "site.example.com",
+    });
+  });
+
+  it("setCoolifyApp upserts on duplicate (chat, project)", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.setCoolifyApp(1, "/workspace/site", "old-uuid", "old.example.com");
+    repo.setCoolifyApp(1, "/workspace/site", "new-uuid", "new.example.com");
+    expect(repo.getCoolifyApp(1, "/workspace/site")).toEqual({
+      uuid: "new-uuid",
+      fqdn: "new.example.com",
+    });
+  });
+
+  it("isolates state across (chat, project) tuples", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.setCoolifyApp(1, "/workspace/a", "uuid-a", "a.example.com");
+    repo.setCoolifyApp(1, "/workspace/b", "uuid-b", "b.example.com");
+    repo.setCoolifyApp(2, "/workspace/a", "uuid-c", "c.example.com");
+    expect(repo.getCoolifyApp(1, "/workspace/a")).toEqual({ uuid: "uuid-a", fqdn: "a.example.com" });
+    expect(repo.getCoolifyApp(1, "/workspace/b")).toEqual({ uuid: "uuid-b", fqdn: "b.example.com" });
+    expect(repo.getCoolifyApp(2, "/workspace/a")).toEqual({ uuid: "uuid-c", fqdn: "c.example.com" });
+  });
+
+  it("creates the coolify_app table on construction (idempotent)", () => {
+    const db = new Database(":memory:");
+    new ChatStateRepo(db);
+    new ChatStateRepo(db); // second construction must not throw
+    const cols = db.prepare("PRAGMA table_info(coolify_app)").all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    expect(names.has("chat_id")).toBe(true);
+    expect(names.has("project_path")).toBe(true);
+    expect(names.has("app_uuid")).toBe(true);
+    expect(names.has("fqdn")).toBe(true);
+  });
+});

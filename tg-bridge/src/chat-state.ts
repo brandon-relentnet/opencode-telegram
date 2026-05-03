@@ -25,6 +25,14 @@ const SCHEMA = `
     model        TEXT,
     updated_at   INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS coolify_app (
+    chat_id      INTEGER NOT NULL,
+    project_path TEXT NOT NULL,
+    app_uuid     TEXT NOT NULL,
+    fqdn         TEXT NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, project_path)
+  );
 `;
 
 function rowToState(row: Row): ChatState {
@@ -44,6 +52,8 @@ export class ChatStateRepo {
   private upsertSessionStmt: Database.Statement;
   private upsertModelStmt: Database.Statement;
   private deleteStmt: Database.Statement<[number]>;
+  private getCoolifyAppStmt: Database.Statement<[number, string]>;
+  private upsertCoolifyAppStmt: Database.Statement;
 
   constructor(private db: Database.Database) {
     db.exec(SCHEMA);
@@ -74,6 +84,17 @@ export class ChatStateRepo {
         updated_at = excluded.updated_at
     `);
     this.deleteStmt = db.prepare("DELETE FROM chat_state WHERE chat_id = ?");
+    this.getCoolifyAppStmt = db.prepare(
+      "SELECT app_uuid, fqdn FROM coolify_app WHERE chat_id = ? AND project_path = ?",
+    );
+    this.upsertCoolifyAppStmt = db.prepare(`
+      INSERT INTO coolify_app (chat_id, project_path, app_uuid, fqdn, updated_at)
+      VALUES (@chatId, @projectPath, @appUuid, @fqdn, @now)
+      ON CONFLICT(chat_id, project_path) DO UPDATE SET
+        app_uuid   = excluded.app_uuid,
+        fqdn       = excluded.fqdn,
+        updated_at = excluded.updated_at
+    `);
   }
 
   get(chatId: number): ChatState | null {
@@ -105,6 +126,33 @@ export class ChatStateRepo {
 
   clear(chatId: number): void {
     this.deleteStmt.run(chatId);
+  }
+
+  /**
+   * Look up the Coolify application UUID + FQDN previously set for this
+   * (chat, project) pair. Returns null if /deploy has never been run for
+   * this combination.
+   */
+  getCoolifyApp(chatId: number, projectPath: string): { uuid: string; fqdn: string } | null {
+    const row = this.getCoolifyAppStmt.get(chatId, projectPath) as
+      | { app_uuid: string; fqdn: string }
+      | undefined;
+    return row ? { uuid: row.app_uuid, fqdn: row.fqdn } : null;
+  }
+
+  /**
+   * Persist the Coolify app UUID + FQDN for this (chat, project) pair.
+   * Used by /deploy after first-deploy succeeds. Idempotent on re-run
+   * via UPSERT.
+   */
+  setCoolifyApp(chatId: number, projectPath: string, appUuid: string, fqdn: string): void {
+    this.upsertCoolifyAppStmt.run({
+      chatId,
+      projectPath,
+      appUuid,
+      fqdn,
+      now: Date.now(),
+    });
   }
 }
 
