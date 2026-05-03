@@ -51,6 +51,9 @@ function makeBot() {
 
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5";
 
+/** Wait for queued microtasks to drain (lets fire-and-forget .catch run). */
+const tick = () => new Promise((r) => setImmediate(r));
+
 describe("handleTextMessage", () => {
   let state: ChatStateRepo;
 
@@ -140,6 +143,9 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       defaultModel: DEFAULT_MODEL,
     });
+    // Error path is asynchronous (.catch on fire-and-forget prompt) so we
+    // need to let the microtask queue drain before asserting on its effects.
+    await tick();
     expect(bot.editMessageText).toHaveBeenCalled();
     const args = bot.editMessageText.mock.calls[0]!;
     expect(String(args[2])).toMatch(/boom/);
@@ -165,6 +171,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       defaultModel: DEFAULT_MODEL,
     });
+    await tick();
     const args = bot.editMessageText.mock.calls[0]!;
     const text = String(args[2]);
     expect(text).toContain("rate limited");
@@ -190,5 +197,48 @@ describe("handleTextMessage", () => {
     const handler = router.registered!;
     handler.onPermissionUpdated({ id: "p1", sessionID: "ses_a", title: "ok?", type: "bash" });
     expect(permissions.sendRequest).toHaveBeenCalledWith(1, "ses_a", expect.objectContaining({ id: "p1" }));
+  });
+
+  it("returns BEFORE the prompt resolves (no sequential blocking — critical for callback_query processing)", async () => {
+    // Regression: an awaited prompt would block grammy's update queue —
+    // when opencode pauses for a permission response, the user's button
+    // press callback can't be processed because the previous handler is
+    // still awaiting the held-up prompt. handleTextMessage MUST return
+    // immediately after dispatching the prompt.
+    state.setProject(1, "/workspace/a", "ses_a");
+    const ctx = makeFakeCtx({ chatId: 1, text: "needs permission" });
+    ctx.reply.mockResolvedValue({ message_id: 555 });
+    const router = makeRouter();
+
+    // A prompt that never resolves — simulates opencode hanging waiting
+    // for a permission response.
+    let promptResolved = false;
+    const client = makeClient(
+      () =>
+        new Promise(() => {
+          // never resolves
+        }),
+    );
+    const bot = makeBot();
+
+    const handlerPromise = handleTextMessage(ctx as never, {
+      state,
+      client,
+      router,
+      bot,
+      permissions: { sendRequest: vi.fn() } as never,
+      defaultModel: DEFAULT_MODEL,
+    });
+
+    // Race: handleTextMessage MUST resolve even though prompt is pending.
+    // If we awaited the prompt, this would hang the test forever.
+    await Promise.race([
+      handlerPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("handler did not return")), 500)),
+    ]);
+
+    // Verify: we got past handleTextMessage, the prompt is still in flight.
+    expect(client.prompt).toHaveBeenCalled();
+    expect(promptResolved).toBe(false);
   });
 });

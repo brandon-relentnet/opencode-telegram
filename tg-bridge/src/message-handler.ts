@@ -109,17 +109,32 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
   // the auth account the bridge has.
   const effectiveModelId = stateRow.model ?? deps.defaultModel;
   const model = parseModelId(effectiveModelId);
-  try {
-    await deps.client.prompt(sessionId, text, {
+
+  // Fire-and-forget the prompt request. SSE events drive UI updates via the
+  // registered handler; onIdle handles success cleanup; the .catch handles
+  // network/HTTP errors.
+  //
+  // We MUST NOT await this. grammy processes updates sequentially by default,
+  // so an awaited prompt would block every other update — including the
+  // user's permission button presses — until opencode's response returns.
+  // For prompts that need permission, opencode pauses waiting for the
+  // permission response, which is itself blocked behind the held-up
+  // callback_query. That's a perfect deadlock that produces "button glows
+  // for 20 seconds and then stops" because Telegram times out the callback.
+  deps.client
+    .prompt(sessionId, text, {
       ...(model ? { model } : {}),
       directory: stateRow.projectPath,
+    })
+    .catch(async (err) => {
+      const msg = describeError(err);
+      try {
+        await turn.showError(`prompt failed: ${msg}`);
+      } finally {
+        if (!unregistered) {
+          unregistered = true;
+          unregister();
+        }
+      }
     });
-  } catch (err) {
-    const msg = describeError(err);
-    await turn.showError(`prompt failed: ${msg}`);
-    if (!unregistered) {
-      unregistered = true;
-      unregister();
-    }
-  }
 }
