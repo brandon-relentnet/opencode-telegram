@@ -119,7 +119,11 @@ async function main(): Promise<void> {
       log,
     }),
   );
-  bot.command("init-remote", (ctx) =>
+  // NOTE: Telegram bot commands cannot contain hyphens (only [A-Za-z0-9_]),
+  // so we register as "initremote" not "init-remote". /init-remote would be
+  // parsed by Telegram as command="init" with arg="-remote ...", routing to
+  // the /init handler instead.
+  bot.command("initremote", (ctx) =>
     handleInitRemote(ctx, {
       client,
       state,

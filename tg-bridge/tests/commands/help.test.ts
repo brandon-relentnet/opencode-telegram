@@ -19,7 +19,7 @@ describe("handleHelp", () => {
       "/switch",
       "/clone",
       "/init",
-      "/init\\-remote",
+      "/initremote",
       "/deploy",
       "/abort",
       "/status",

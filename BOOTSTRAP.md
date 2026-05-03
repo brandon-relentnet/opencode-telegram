@@ -148,9 +148,9 @@ and the troubleshooting notes in the design spec.
 > bash/webfetch permissions. Read-only chats (no permission prompts)
 > work fine in any Telegram-compatible client.
 
-## 11. (Optional) Configure /init-remote + /deploy
+## 11. (Optional) Configure /initremote + /deploy
 
-If you want to use `/init-remote` (auto-create GitHub repos) and `/deploy` (push to your Coolify server), do this one-time setup. Skip this section if you only need local-project workflows; everything else keeps working without these env vars.
+If you want to use `/initremote` (auto-create GitHub repos) and `/deploy` (push to your Coolify server), do this one-time setup. Skip this section if you only need local-project workflows; everything else keeps working without these env vars.
 
 ### A. GitHub PAT
 
@@ -204,7 +204,7 @@ The opencode container needs to be recreated so it picks up `GH_TOKEN` and the `
 
 ### G. Smoke test from Telegram
 
-1. `/init-remote test-deploy-1` — see streaming view → final auto-switch confirmation
+1. `/initremote test-deploy-1` — see streaming view → final auto-switch confirmation
 2. Visit `https://github.com/<your-username>/test-deploy-1` — confirm private repo with one commit
 3. Chat: "build me a simple hello-world Astro site"
 4. `/deploy` — see streaming view → final "✅ Deployed: https://..." message

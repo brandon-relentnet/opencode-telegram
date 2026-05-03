@@ -125,6 +125,24 @@ describe("isSafeProjectName", () => {
     expect(isSafeProjectName("foo\\bar")).toBe(false);
     expect(isSafeProjectName("/abs/path")).toBe(false);
   });
+
+  it("rejects whitespace and shell-meta characters", () => {
+    expect(isSafeProjectName("foo bar")).toBe(false);
+    expect(isSafeProjectName("foo\tbar")).toBe(false);
+    expect(isSafeProjectName("foo;bar")).toBe(false);
+    expect(isSafeProjectName("foo$(rm)")).toBe(false);
+    expect(isSafeProjectName("foo*bar")).toBe(false);
+    expect(isSafeProjectName('foo"bar')).toBe(false);
+  });
+
+  it("rejects names starting with a dash (parses like a CLI flag)", () => {
+    // Regression for the /init-remote Telegram-routing bug: when /init-remote
+    // got matched by the /init handler, "-remote test-repo" was passed as
+    // the project name. We need to reject such inputs even before the command
+    // routing is fixed.
+    expect(isSafeProjectName("-remote")).toBe(false);
+    expect(isSafeProjectName("-rf")).toBe(false);
+  });
 });
 
 describe("buildSwitchConfirmation", () => {

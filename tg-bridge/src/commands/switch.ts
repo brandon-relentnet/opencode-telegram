@@ -28,8 +28,14 @@ export interface SwitchDeps {
 export function isSafeProjectName(name: string): boolean {
   if (name.length === 0) return false;
   if (isAbsolute(name)) return false;
-  if (name.includes("/") || name.includes("\\")) return false;
-  if (name.startsWith(".")) return false;
+  // Only allow alphanumerics, dot, underscore, hyphen. Rejects whitespace,
+  // path separators, shell metacharacters, command-arg lookalikes.
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return false;
+  // No leading dot (collides with .git, hidden from /projects listing).
+  // No leading dash (parses like a CLI flag in shell commands; also protects
+  // against Telegram bot-command quirks like "/init-remote" being routed to
+  // /init handler with name="-remote").
+  if (name.startsWith(".") || name.startsWith("-")) return false;
   return true;
 }
 

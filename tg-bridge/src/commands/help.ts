@@ -9,7 +9,7 @@ const RAW = [
   "/switch <name> — switch to a project (creates a new session)",
   "/clone <git-url> [name] — clone a git repository into /workspace",
   "/init <name> — create an empty new project under /workspace (with git init)",
-  "/init-remote <name> — create new project + private GitHub repo + push",
+  "/initremote <name> — create new project + private GitHub repo + push",
   "/deploy — push pending changes + create-or-update Coolify app + deploy",
   "/abort — abort the current running task",
   "/status — show current project, session, and model",
