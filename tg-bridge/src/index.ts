@@ -13,6 +13,8 @@ import { handleProjects } from "./commands/projects.js";
 import { handleSwitch } from "./commands/switch.js";
 import { handleClone } from "./commands/clone.js";
 import { handleInit } from "./commands/init.js";
+import { handleInitRemote } from "./commands/init-remote.js";
+import { handleDeploy } from "./commands/deploy.js";
 import { handleNew } from "./commands/new.js";
 import { handleAbort } from "./commands/abort.js";
 import { handleStatus } from "./commands/status.js";
@@ -114,6 +116,37 @@ async function main(): Promise<void> {
       bot: turnBot,
       workspaceRoot: config.workspaceRoot,
       defaultModel: config.defaultModel,
+      log,
+    }),
+  );
+  bot.command("init-remote", (ctx) =>
+    handleInitRemote(ctx, {
+      client,
+      state,
+      router,
+      bot: turnBot,
+      workspaceRoot: config.workspaceRoot,
+      defaultModel: config.defaultModel,
+      ghToken: config.ghToken,
+      ghOwner: config.ghOwner,
+      log,
+    }),
+  );
+  bot.command("deploy", (ctx) =>
+    handleDeploy(ctx, {
+      client,
+      state,
+      router,
+      bot: turnBot,
+      workspaceRoot: config.workspaceRoot,
+      defaultModel: config.defaultModel,
+      coolifyConfig: {
+        url: config.coolifyUrl,
+        token: config.coolifyToken,
+        serverUuid: config.coolifyServerUuid,
+        projectUuid: config.coolifyProjectUuid,
+        githubAppUuid: config.coolifyGithubAppUuid,
+      },
       log,
     }),
   );

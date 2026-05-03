@@ -19,6 +19,8 @@ describe("handleHelp", () => {
       "/switch",
       "/clone",
       "/init",
+      "/init\\-remote",
+      "/deploy",
       "/abort",
       "/status",
       "/model",
