@@ -69,12 +69,16 @@ describe("handleInitRemote validation", () => {
     expect(createSpy).not.toHaveBeenCalled();
   });
 
-  it("replies with friendly error when ghToken is undefined", async () => {
+  it("dispatches successfully when ghToken is undefined (gh CLI auth fallback)", async () => {
+    // gh CLI authenticates via either GH_TOKEN env var OR `gh auth login`
+    // credentials stored in ~/.config/gh/hosts.yml. The bridge no longer
+    // requires GH_TOKEN to be set; the agent's `gh repo create` will surface
+    // a clear error if neither auth method works.
+    vi.mocked(existsSync).mockReturnValue(false);
     const ctx = makeFakeCtx("ok");
     const createSpy = vi.spyOn(projectCreator, "createProject").mockResolvedValue();
     await handleInitRemote(ctx as never, makeDeps({ ghToken: undefined }));
-    expect(String(ctx.reply.mock.calls[0]![0])).toMatch(/GH\\?_TOKEN/);
-    expect(createSpy).not.toHaveBeenCalled();
+    expect(createSpy).toHaveBeenCalledTimes(1);
   });
 
   it("replies with friendly error when ghOwner is undefined", async () => {

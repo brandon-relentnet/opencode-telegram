@@ -44,16 +44,11 @@ export async function handleInitRemote(ctx: Context, deps: InitRemoteDeps): Prom
       return;
     }
 
-    if (!deps.ghToken) {
-      await ctx.reply(
-        escapeMarkdownV2(
-          "GH_TOKEN is not set on the bridge. Set it in deploy/.env so /init-remote can create GitHub repos.",
-        ),
-        { parse_mode: "MarkdownV2" },
-      );
-      return;
-    }
-
+    // Auth: gh CLI inside the opencode container reads GH_TOKEN from env if
+    // set (long-lived PAT), or falls back to credentials from `gh auth login`
+    // stored in ~/.config/gh/hosts.yml. We only require GH_OWNER (which
+    // namespace to create repos under) — the agent's `gh repo create` call
+    // will surface a clear authentication error if neither auth method works.
     if (!deps.ghOwner) {
       await ctx.reply(
         escapeMarkdownV2(
