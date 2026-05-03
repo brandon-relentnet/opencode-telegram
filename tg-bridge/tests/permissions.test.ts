@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { PermissionService, type PermissionBot } from "../src/permissions.js";
+import {
+  PermissionService,
+  renderPermissionPrompt,
+  type PermissionBot,
+} from "../src/permissions.js";
 import type { OpencodeClient } from "../src/opencode-client.js";
 
 function makeBot(): PermissionBot & {
@@ -46,14 +50,13 @@ describe("PermissionService", () => {
     await svc.sendRequest(42, "ses_1", {
       id: "perm_x",
       sessionID: "ses_1",
-      title: "Allow bash command?",
       type: "bash",
       input: { command: "ls" },
     });
     expect(bot.calls.sends).toHaveLength(1);
     const [chatId, text, opts] = bot.calls.sends[0]!;
     expect(chatId).toBe(42);
-    expect(text).toMatch(/Allow bash command/);
+    expect(text).toMatch(/bash/);
     const kb = (opts as { reply_markup?: { inline_keyboard?: unknown[][] } }).reply_markup;
     expect(kb?.inline_keyboard?.[0]).toHaveLength(3);
     const buttons = kb!.inline_keyboard![0]!.map(
@@ -170,5 +173,72 @@ describe("PermissionService", () => {
       message: { chat: { id: 42 }, message_id: 700 },
     });
     expect(client.respondToPermission).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the new opencode 1.14.32 permission.asked payload (permission + patterns + always)", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const svc = new PermissionService(bot, client, { timeoutMs: 60_000 });
+    // Real shape captured from opencode 1.14.32:
+    await svc.sendRequest(42, "ses_1", {
+      id: "per_real",
+      sessionID: "ses_1",
+      permission: "bash",
+      patterns: ["pwd"],
+      metadata: {},
+      always: ["pwd *"],
+      tool: { messageID: "msg_1", callID: "toolu_1" },
+    });
+    expect(bot.calls.sends).toHaveLength(1);
+    const text = bot.calls.sends[0]![1] as string;
+    // Header mentions the permission type
+    expect(text).toMatch(/Permission requested.*bash/);
+    // Pattern shows up in a code span
+    expect(text).toContain("`pwd`");
+    // "Always" hint shown
+    expect(text).toMatch(/Always allows.*pwd/);
+    // Buttons still wire up correctly
+    const opts = bot.calls.sends[0]![2] as {
+      reply_markup: { inline_keyboard: Array<Array<{ callback_data: string }>> };
+    };
+    const buttons = opts.reply_markup.inline_keyboard[0]!.map((b) => b.callback_data);
+    expect(buttons).toEqual(["perm:per_real:once", "perm:per_real:always", "perm:per_real:deny"]);
+  });
+});
+
+describe("renderPermissionPrompt", () => {
+  it("uses `permission` field from opencode 1.14.32", () => {
+    const out = renderPermissionPrompt({
+      id: "p1",
+      permission: "bash",
+      patterns: ["ls -la"],
+    });
+    expect(out).toMatch(/bash/);
+    expect(out).toContain("`ls -la`");
+  });
+
+  it("falls back to legacy `type` if `permission` is absent", () => {
+    const out = renderPermissionPrompt({ id: "p1", type: "webfetch" });
+    expect(out).toMatch(/webfetch/);
+  });
+
+  it("falls back to legacy `title` if neither `permission` nor `type` set", () => {
+    const out = renderPermissionPrompt({ id: "p1", title: "Old style title" });
+    // (no hyphen — escapeMarkdownV2 would escape it; we test the text passes through)
+    expect(out).toMatch(/Old style title/);
+  });
+
+  it("uses generic label when nothing useful is provided", () => {
+    const out = renderPermissionPrompt({ id: "p1" });
+    expect(out).toMatch(/Permission requested/);
+  });
+
+  it("escapes backticks inside pattern strings", () => {
+    const out = renderPermissionPrompt({
+      id: "p1",
+      permission: "bash",
+      patterns: ["echo `whoami`"],
+    });
+    expect(out).toContain("echo \\`whoami\\`");
   });
 });

@@ -154,6 +154,10 @@ export class EventRouter {
         handler.onError(error);
         return;
       }
+      // opencode 1.14.32 publishes `permission.asked` when the agent first
+      // requests a permission (the SDK types still claim `permission.updated`,
+      // but the server emits `.asked`). We accept both for forward compat.
+      case "permission.asked":
       case "permission.updated":
         handler.onPermissionUpdated(evt.properties);
         return;
@@ -176,6 +180,7 @@ export class EventRouter {
       type === "message.part.updated" ||
       type === "session.idle" ||
       type === "session.error" ||
+      type === "permission.asked" ||
       type === "permission.updated"
     );
   }

@@ -186,6 +186,35 @@ describe("EventRouter — dispatch", () => {
     await runPromise;
   });
 
+  it("dispatches permission.asked (the actual event opencode 1.14.32 emits) to the handler", async () => {
+    const pushable = makePushable<unknown>();
+    const client = makeClientWithStream(pushable.iterable());
+    const router = new EventRouter(client);
+    const handler = makeHandler();
+    router.registerSession("ses_1", handler);
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
+
+    // Real shape captured from opencode 1.14.32 server.
+    const perm = {
+      id: "per_real",
+      sessionID: "ses_1",
+      permission: "bash",
+      patterns: ["pwd"],
+      metadata: {},
+      always: ["pwd *"],
+      tool: { messageID: "msg_1", callID: "toolu_1" },
+    };
+    pushable.push({ type: "permission.asked", properties: perm });
+    await tick();
+
+    expect(handler.onPermissionUpdated).toHaveBeenCalledWith(perm);
+
+    ac.abort();
+    pushable.end();
+    await runPromise;
+  });
+
   it("dispatches permission.updated to the handler for the matching sessionID", async () => {
     const pushable = makePushable<unknown>();
     const client = makeClientWithStream(pushable.iterable());

@@ -23,12 +23,40 @@ export interface PermissionBot {
   answerCallbackQuery(id: string, opts?: { text?: string }): Promise<unknown>;
 }
 
+/**
+ * Shape of the `permission.asked` (and legacy `permission.updated`) event
+ * payload from opencode 1.14.32. Fields beyond `id` are best-effort —
+ * opencode may add more in future versions.
+ *
+ * Real example:
+ *   {
+ *     id: "per_...",
+ *     sessionID: "ses_...",
+ *     permission: "bash",
+ *     patterns: ["pwd"],
+ *     metadata: {},
+ *     always: ["pwd *"],
+ *     tool: { messageID, callID }
+ *   }
+ */
 export interface PermissionRequest {
   id: string;
   sessionID?: string;
-  title?: string;
+  /** Permission type, e.g. "bash" / "webfetch". */
+  permission?: string;
+  /** What's being asked, e.g. ["pwd"] or ["https://example.com/foo"]. */
+  patterns?: string[];
+  /** Pattern that "Always" would extend permission to (e.g. "pwd *"). */
+  always?: string[];
+  /** Legacy/SDK field name for `permission`. */
   type?: string;
+  /** Legacy human-readable title (older opencode versions). */
+  title?: string;
+  /** Extra structured input (older opencode versions). */
   input?: unknown;
+  /** Tool call context. */
+  tool?: { messageID?: string; callID?: string };
+  metadata?: Record<string, unknown>;
 }
 
 export interface CallbackQuery {
@@ -59,8 +87,7 @@ export class PermissionService {
   ) {}
 
   async sendRequest(chatId: number, sessionId: string, perm: PermissionRequest): Promise<void> {
-    const title = perm.title ?? `Permission requested${perm.type ? ` (${perm.type})` : ""}`;
-    const text = `🔐 ${escapeMarkdownV2(title)}`;
+    const text = renderPermissionPrompt(perm);
     const sent = await this.bot.sendMessage(chatId, text, {
       parse_mode: "MarkdownV2",
       reply_markup: {
@@ -148,4 +175,39 @@ export class PermissionService {
       this.pending.delete(permId);
     }
   }
+}
+
+/**
+ * Build the user-facing prompt text for a permission request.
+ *
+ * opencode emits structured fields (`permission`, `patterns`, `always`),
+ * but older versions used `title`/`type`/`input`. We try the new fields
+ * first, fall back to the legacy `title`, and finally use a generic
+ * label when neither is present.
+ *
+ * Output is MarkdownV2-escaped and ready to send.
+ */
+export function renderPermissionPrompt(perm: PermissionRequest): string {
+  const kind = perm.permission ?? perm.type;
+  const lines: string[] = [];
+  // Header
+  if (kind) {
+    lines.push(`🔐 *${escapeMarkdownV2(`Permission requested: ${kind}`)}*`);
+  } else if (perm.title) {
+    lines.push(`🔐 *${escapeMarkdownV2(perm.title)}*`);
+  } else {
+    lines.push(`🔐 *${escapeMarkdownV2("Permission requested")}*`);
+  }
+  // What's being asked (specific patterns)
+  if (perm.patterns && perm.patterns.length > 0) {
+    for (const p of perm.patterns) {
+      lines.push("`" + p.replace(/`/g, "\\`") + "`");
+    }
+  }
+  // What "Always" would extend to (informational)
+  if (perm.always && perm.always.length > 0) {
+    const allowsLabel = `Always allows: ${perm.always.join(", ")}`;
+    lines.push("_" + escapeMarkdownV2(allowsLabel) + "_");
+  }
+  return lines.join("\n");
 }
