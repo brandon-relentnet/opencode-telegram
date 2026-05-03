@@ -148,6 +148,72 @@ and the troubleshooting notes in the design spec.
 > bash/webfetch permissions. Read-only chats (no permission prompts)
 > work fine in any Telegram-compatible client.
 
+## 11. (Optional) Configure /init-remote + /deploy
+
+If you want to use `/init-remote` (auto-create GitHub repos) and `/deploy` (push to your Coolify server), do this one-time setup. Skip this section if you only need local-project workflows; everything else keeps working without these env vars.
+
+### A. GitHub PAT
+
+1. Visit https://github.com/settings/tokens/new
+2. Note name: `tg-bridge-coolify`
+3. Expiration: pick a value (90 days recommended; 1 year is the max practical)
+4. Scopes: check **`repo`** (Full control of private repositories) and **`workflow`** (Update GitHub Action workflows)
+5. Generate token; copy the `ghp_...` value
+6. Add to `/mnt/user/appdata/opencode/.env`:
+   ```
+   GH_TOKEN=ghp_...
+   GH_OWNER=your-github-username
+   ```
+   (`GH_OWNER` is your username for personal repos, or an org name if you want repos created in an org. The PAT must have access to that namespace.)
+
+### B. Coolify GitHub App (one-time per Coolify instance)
+
+1. In Coolify dashboard → **Sources** → **+ New** → **GitHub App**
+2. Walk through the GitHub OAuth flow to install the Coolify GitHub App into your account (or org)
+3. After installation, click the source in Coolify and copy its **UUID** from the page
+
+### C. Coolify API token
+
+1. Coolify dashboard → top-right avatar → **Keys & Tokens** → **API Tokens** → **+ Create New Token**
+2. Permissions: include **read** + **write** + **deploy** (or "all" for simplicity)
+3. Copy the token
+
+### D. Note your Coolify Server + Project UUIDs
+
+1. **Server UUID:** Coolify dashboard → **Servers** → click your server → URL bar contains `/server/<uuid>`
+2. **Project UUID:** Coolify dashboard → **Projects** → click your project (or create one named "telegram-deploys") → URL bar contains `/project/<uuid>`
+
+### E. Add to `/mnt/user/appdata/opencode/.env`
+
+```
+COOLIFY_URL=https://coolify.your-domain.com
+COOLIFY_TOKEN=...
+COOLIFY_SERVER_UUID=...
+COOLIFY_PROJECT_UUID=...
+COOLIFY_GITHUB_APP_UUID=...
+```
+
+### F. Restart the stack
+
+```bash
+cd /mnt/user/appdata/opencode/repo
+docker compose -f deploy/compose.yaml up -d
+```
+
+The opencode container needs to be recreated so it picks up `GH_TOKEN` and the `COOLIFY_*` vars (the agent's bash reads them via shell expansion).
+
+### G. Smoke test from Telegram
+
+1. `/init-remote test-deploy-1` — see streaming view → final auto-switch confirmation
+2. Visit `https://github.com/<your-username>/test-deploy-1` — confirm private repo with one commit
+3. Chat: "build me a simple hello-world Astro site"
+4. `/deploy` — see streaming view → final "✅ Deployed: https://..." message
+5. Open the deploy URL — confirm site loads
+6. Chat: "change the heading to 'Hello, World 2'"
+7. `/deploy` again — confirm rebuild after a minute (Coolify takes 30s-2min depending on stack)
+
+If anything fails: `docker logs tg-bridge --tail=200` and `docker logs opencode --tail=200` show what went wrong.
+
 ## Routine maintenance
 
 - **Update opencode:** `make build` then `make restart`. Auth and sessions persist via the volumes.

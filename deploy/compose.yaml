@@ -28,6 +28,15 @@ services:
     environment:
       OPENCODE_SERVER_USERNAME: ${OPENCODE_USERNAME:-opencode}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:?required}
+      # /init-remote: gh CLI inside container reads GH_TOKEN from env
+      GH_TOKEN: ${GH_TOKEN:-}
+      # /deploy: agent's bash references these as shell variables when
+      # POSTing to Coolify, so the secret never goes through the LLM
+      COOLIFY_URL: ${COOLIFY_URL:-}
+      COOLIFY_TOKEN: ${COOLIFY_TOKEN:-}
+      COOLIFY_SERVER_UUID: ${COOLIFY_SERVER_UUID:-}
+      COOLIFY_PROJECT_UUID: ${COOLIFY_PROJECT_UUID:-}
+      COOLIFY_GITHUB_APP_UUID: ${COOLIFY_GITHUB_APP_UUID:-}
     volumes:
       - ${WORKSPACE_HOST_PATH:?required}:/workspace
       - ${APPDATA_HOST_PATH:?required}/data:/root/.local/share/opencode
@@ -57,6 +66,15 @@ services:
       WORKSPACE_ROOT: /workspace
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DEFAULT_MODEL: ${DEFAULT_MODEL:-anthropic/claude-sonnet-4-5}
+      # /init-remote: bridge validates ghToken/ghOwner are set before dispatching
+      GH_TOKEN: ${GH_TOKEN:-}
+      GH_OWNER: ${GH_OWNER:-}
+      # /deploy: bridge validates these are set before dispatching
+      COOLIFY_URL: ${COOLIFY_URL:-}
+      COOLIFY_TOKEN: ${COOLIFY_TOKEN:-}
+      COOLIFY_SERVER_UUID: ${COOLIFY_SERVER_UUID:-}
+      COOLIFY_PROJECT_UUID: ${COOLIFY_PROJECT_UUID:-}
+      COOLIFY_GITHUB_APP_UUID: ${COOLIFY_GITHUB_APP_UUID:-}
     volumes:
       # The bridge needs to see the same workspace mount to validate /switch.
       - ${WORKSPACE_HOST_PATH:?required}:/workspace:ro
