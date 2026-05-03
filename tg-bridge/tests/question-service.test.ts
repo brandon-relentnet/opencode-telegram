@@ -1,0 +1,279 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { QuestionService, type QuestionRequest, type QuestionBot } from "../src/question-service.js";
+import type { OpencodeClient } from "../src/opencode-client.js";
+
+function makeBot(): QuestionBot & {
+  _sentMessages: Array<{ chatId: number; text: string; opts: unknown }>;
+  _editedMessages: Array<{ chatId: number; messageId: number; text: string; opts: unknown }>;
+} {
+  const sentMessages: Array<{ chatId: number; text: string; opts: unknown }> = [];
+  const editedMessages: Array<{ chatId: number; messageId: number; text: string; opts: unknown }> = [];
+  let nextMsgId = 1000;
+  return {
+    _sentMessages: sentMessages,
+    _editedMessages: editedMessages,
+    sendMessage: vi.fn(async (chatId: number, text: string, opts: unknown) => {
+      const id = nextMsgId++;
+      sentMessages.push({ chatId, text, opts });
+      return { message_id: id };
+    }),
+    editMessageText: vi.fn(async (chatId: number, messageId: number, text: string, opts: unknown) => {
+      editedMessages.push({ chatId, messageId, text, opts });
+      return undefined;
+    }),
+    answerCallbackQuery: vi.fn(async () => undefined),
+  };
+}
+
+function makeClient(): OpencodeClient & {
+  _replies: Array<{ requestId: string; answers: Array<Array<string>> }>;
+  _rejects: Array<string>;
+} {
+  const replies: Array<{ requestId: string; answers: Array<Array<string>> }> = [];
+  const rejects: Array<string> = [];
+  return {
+    _replies: replies,
+    _rejects: rejects,
+    respondToQuestion: vi.fn(async (requestId: string, answers: Array<Array<string>>) => {
+      replies.push({ requestId, answers });
+      return true;
+    }),
+    rejectQuestion: vi.fn(async (requestId: string) => {
+      rejects.push(requestId);
+      return true;
+    }),
+    // Stubs for unused methods — type-narrowed so TS doesn't complain
+    createSession: vi.fn(),
+    abortSession: vi.fn(),
+    listSessions: vi.fn(),
+    prompt: vi.fn(),
+    listProjects: vi.fn(),
+    listProviders: vi.fn(),
+    respondToPermission: vi.fn(),
+    subscribeToEvents: vi.fn(),
+  } as never;
+}
+
+describe("QuestionService — single-select", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sends one Telegram message per question with a single-select keyboard", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_1",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick a color",
+          header: "Color",
+          options: [
+            { label: "Red", description: "warm" },
+            { label: "Blue", description: "cool" },
+          ],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    expect(bot._sentMessages).toHaveLength(1);
+    const sent = bot._sentMessages[0]!;
+    expect(sent.chatId).toBe(42);
+    expect(sent.text).toContain("Color"); // header
+    expect(sent.text).toContain("Pick a color"); // question text
+    // Verify keyboard structure
+    const opts = sent.opts as { reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } };
+    const buttons = opts.reply_markup.inline_keyboard.flat();
+    const labels = buttons.map((b) => b.text);
+    expect(labels).toContain("Red");
+    expect(labels).toContain("Blue");
+    // "Type your own" should be present (custom defaults to true)
+    expect(labels.some((l) => l.toLowerCase().includes("type your own"))).toBe(true);
+    // Callback data uses qst:<requestID>:<qIdx>:pick:<optIdx>
+    const redBtn = buttons.find((b) => b.text === "Red");
+    expect(redBtn?.callback_data).toBe("qst:qst_1:0:pick:0");
+  });
+
+  it("omits 'Type your own' when custom is false", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_2",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Yes or no?",
+          header: "Confirm",
+          custom: false,
+          options: [
+            { label: "Yes", description: "" },
+            { label: "No", description: "" },
+          ],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    const opts = bot._sentMessages[0]!.opts as { reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } };
+    const buttons = opts.reply_markup.inline_keyboard.flat();
+    const labels = buttons.map((b) => b.text);
+    expect(labels.some((l) => l.toLowerCase().includes("type your own"))).toBe(false);
+  });
+
+  it("on pick callback, edits message to show selected answer and submits when all done", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_3",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick one",
+          header: "H",
+          options: [
+            { label: "A", description: "" },
+            { label: "B", description: "" },
+          ],
+        },
+      ],
+    };
+    await service.sendRequest(99, req);
+    const claimed = await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_3:0:pick:0",
+      message: { chat: { id: 99 }, message_id: 1000 },
+    });
+    expect(claimed).toBe(true);
+    // Should have edited the message and submitted to opencode
+    expect(bot._editedMessages.length).toBeGreaterThanOrEqual(1);
+    const lastEdit = bot._editedMessages[bot._editedMessages.length - 1]!;
+    expect(lastEdit.text).toContain("A"); // selected label appears in final state
+    expect(client._replies).toHaveLength(1);
+    expect(client._replies[0]).toEqual({ requestId: "qst_3", answers: [["A"]] });
+  });
+
+  it("with multiple questions, waits for all to be answered before submitting", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_4",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Q1",
+          header: "H1",
+          options: [{ label: "A", description: "" }, { label: "B", description: "" }],
+        },
+        {
+          question: "Q2",
+          header: "H2",
+          options: [{ label: "X", description: "" }, { label: "Y", description: "" }],
+        },
+      ],
+    };
+    await service.sendRequest(99, req);
+    expect(bot._sentMessages).toHaveLength(2);
+    // Answer Q2 first
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_4:1:pick:1",
+      message: { chat: { id: 99 }, message_id: 1001 },
+    });
+    expect(client._replies).toHaveLength(0); // not all done
+    // Then Q1
+    await service.handleCallback({
+      id: "cb2",
+      data: "qst:qst_4:0:pick:0",
+      message: { chat: { id: 99 }, message_id: 1000 },
+    });
+    expect(client._replies).toHaveLength(1);
+    expect(client._replies[0]).toEqual({ requestId: "qst_4", answers: [["A"], ["Y"]] });
+  });
+
+  it("returns false from handleCallback for non-qst: prefixes", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const claimed = await service.handleCallback({ id: "cb1", data: "perm:xyz:once" });
+    expect(claimed).toBe(false);
+  });
+
+  it("answers stale callback with 'Already responded' when request is unknown", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const claimed = await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_unknown:0:pick:0",
+    });
+    expect(claimed).toBe(true);
+    expect(bot.answerCallbackQuery).toHaveBeenCalledWith("cb1", expect.objectContaining({ text: expect.stringMatching(/already|expired/i) }));
+  });
+
+  it("ignores malformed callback data with non-integer qIdx", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_g1",
+      sessionID: "ses_1",
+      questions: [
+        { question: "Q", header: "H", options: [{ label: "A", description: "" }] },
+      ],
+    };
+    await service.sendRequest(99, req);
+    // Malformed: "abc" instead of integer
+    const claimed = await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_g1:abc:pick:0",
+      message: { chat: { id: 99 }, message_id: 1000 },
+    });
+    expect(claimed).toBe(true);
+    // Should NOT have submitted
+    expect(client._replies).toHaveLength(0);
+  });
+
+  it("calls rejectQuestion when respondToQuestion fails, to unblock opencode", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    // Make respondToQuestion throw
+    client.respondToQuestion = vi.fn(async () => {
+      throw new Error("opencode 500");
+    });
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_failsubmit",
+      sessionID: "ses_1",
+      questions: [
+        { question: "Q", header: "H", options: [{ label: "A", description: "" }] },
+      ],
+    };
+    await service.sendRequest(99, req);
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_failsubmit:0:pick:0",
+      message: { chat: { id: 99 }, message_id: 1000 },
+    });
+    // submit failed → reject was called as compensation
+    expect(client._rejects).toContain("qst_failsubmit");
+  });
+
+  it("immediately submits empty answers when req.questions is empty", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_empty",
+      sessionID: "ses_1",
+      questions: [],
+    };
+    await service.sendRequest(42, req);
+    expect(bot._sentMessages).toHaveLength(0);
+    expect(client._replies).toHaveLength(1);
+    expect(client._replies[0]).toEqual({ requestId: "qst_empty", answers: [] });
+  });
+});
