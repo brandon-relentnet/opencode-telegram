@@ -216,7 +216,14 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
         ...(options?.model ? { model: options.model } : {}),
         parts: [{ type: "text" as const, text }],
       };
-      const { data } = await client.session.prompt({
+      // promptAsync returns immediately (HTTP 204-ish) instead of holding
+      // the connection open for the agent's full lifecycle. The bridge's
+      // completion + streaming UX is purely SSE-driven via EventRouter, so
+      // we don't need the sync /session/{id}/message endpoint's blocking
+      // semantics. Using the sync endpoint caused "prompt failed: fetch
+      // failed" on long-running tasks (Node 22 undici bodyTimeout +
+      // intermediate idle timeouts kill the connection ~2-3 min in).
+      const { data } = await client.session.promptAsync({
         path: { id: sessionId },
         body,
         ...(options?.directory ? { query: { directory: options.directory } } : {}),
