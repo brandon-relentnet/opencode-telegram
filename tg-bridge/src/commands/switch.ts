@@ -2,6 +2,7 @@ import type { Context } from "grammy";
 import { existsSync, statSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { escapeMarkdownV2 } from "../format.js";
+import { describeError } from "../errors.js";
 import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
 
@@ -39,16 +40,18 @@ export async function handleSwitch(ctx: Context, deps: SwitchDeps): Promise<void
     return;
   }
 
-  const session = await deps.client.createSession(`tg:${arg}`);
-  // Seed the session with a no-reply context message anchoring the agent
-  // to this directory. opencode sessions don't have an intrinsic project
-  // field, so we communicate the working directory in the conversation.
-  await deps.client.prompt(
-    session.id,
-    `You are working on a project located at \`${projectPath}\`. ` +
-      `Use this as the working directory for all file operations. ` +
-      `Files outside this directory are out of scope.`,
-  );
+  let session: { id: string };
+  try {
+    // Pass `directory` so opencode anchors the session to this worktree
+    // (auto-creating a Project record if one doesn't exist) and so subsequent
+    // turns in `message-handler` can re-anchor against the same path.
+    session = await deps.client.createSession(`tg:${arg}`, { directory: projectPath });
+  } catch (err) {
+    await ctx.reply(escapeMarkdownV2(`❌ Failed to switch: ${describeError(err)}`), {
+      parse_mode: "MarkdownV2",
+    });
+    return;
+  }
   deps.state.setProject(ctx.chat!.id, projectPath, session.id);
 
   await ctx.reply(

@@ -56,6 +56,7 @@ services:
       OPENCODE_PASSWORD: ${OPENCODE_SERVER_PASSWORD:?required}
       WORKSPACE_ROOT: /workspace
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-anthropic/claude-sonnet-4-5}
     volumes:
       # The bridge needs to see the same workspace mount to validate /switch.
       - ${WORKSPACE_HOST_PATH:?required}:/workspace:ro

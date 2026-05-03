@@ -115,10 +115,32 @@ async function main(): Promise<void> {
 
   // 4) Default text handler.
   bot.on("message:text", (ctx) =>
-    handleTextMessage(ctx, { state, client, router, permissions, bot: turnBot }),
+    handleTextMessage(ctx, {
+      state,
+      client,
+      router,
+      permissions,
+      bot: turnBot,
+      defaultModel: config.defaultModel,
+    }),
   );
 
-  // 5) Start the SSE consumer in the background; never await it.
+  // 5) Catch any error thrown out of a handler so a single buggy turn doesn't
+  // kill the bot loop. grammy's default behaviour on unhandled errors is to
+  // print "No error handler was set!" then stop polling. We log instead so
+  // the container keeps serving subsequent messages.
+  bot.catch((err) => {
+    log.error(
+      {
+        err: err.error,
+        update_id: err.ctx.update.update_id,
+        chat_id: err.ctx.chat?.id,
+      },
+      "unhandled bot error",
+    );
+  });
+
+  // 6) Start the SSE consumer in the background; never await it.
   const ac = new AbortController();
   void router.start(ac.signal).catch((err) => log.error({ err }, "EventRouter exited"));
 

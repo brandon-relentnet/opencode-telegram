@@ -41,13 +41,32 @@ export interface OpencodeClientOptions {
  * `OpencodeClient` class.
  */
 export interface BridgeOpencodeClient {
-  createSession(title?: string): Promise<{ id: string }>;
+  /**
+   * Create a session. When `options.directory` is provided, opencode anchors
+   * the session to that worktree (auto-creating a Project entry if one
+   * doesn't already exist). Without it, the session falls back to the
+   * server's CWD ("/workspace" in our container) and ends up under the
+   * "global" project.
+   */
+  createSession(
+    title?: string,
+    options?: { directory?: string },
+  ): Promise<{ id: string }>;
   abortSession(sessionId: string): Promise<boolean>;
   listSessions(): Promise<SdkSession[]>;
+  /**
+   * Send a prompt. `options.model` selects the model (otherwise opencode
+   * picks its default, which may not match the provider account the bridge
+   * has authenticated against). `options.directory` re-anchors the turn to
+   * a specific worktree.
+   */
   prompt(
     sessionId: string,
     text: string,
-    options?: { model?: { providerID: string; modelID: string } },
+    options?: {
+      model?: { providerID: string; modelID: string };
+      directory?: string;
+    },
   ): Promise<unknown>;
   listProjects(): Promise<SdkProject[]>;
   listProviders(): Promise<{ providers: unknown[]; default: Record<string, string> }>;
@@ -96,9 +115,10 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
   });
 
   return {
-    async createSession(title) {
+    async createSession(title, options) {
       const { data } = await client.session.create({
         body: title === undefined ? {} : { title },
+        ...(options?.directory ? { query: { directory: options.directory } } : {}),
       });
       if (!data || typeof data.id !== "string") {
         throw new Error("createSession: unexpected response shape");
@@ -126,6 +146,7 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
       const { data } = await client.session.prompt({
         path: { id: sessionId },
         body,
+        ...(options?.directory ? { query: { directory: options.directory } } : {}),
       });
       return data;
     },

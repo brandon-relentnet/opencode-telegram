@@ -1,5 +1,6 @@
 import type { Context } from "grammy";
 import { escapeMarkdownV2 } from "../format.js";
+import { describeError } from "../errors.js";
 import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
 
@@ -17,7 +18,15 @@ export async function handleAbort(ctx: Context, deps: AbortDeps): Promise<void> 
     });
     return;
   }
-  const ok = await deps.client.abortSession(current.sessionId);
+  let ok: boolean;
+  try {
+    ok = await deps.client.abortSession(current.sessionId);
+  } catch (err) {
+    await ctx.reply(escapeMarkdownV2(`❌ Failed to abort: ${describeError(err)}`), {
+      parse_mode: "MarkdownV2",
+    });
+    return;
+  }
   await ctx.reply(
     escapeMarkdownV2(ok ? "Aborted." : "Could not abort (nothing to abort, perhaps?)."),
     { parse_mode: "MarkdownV2" },

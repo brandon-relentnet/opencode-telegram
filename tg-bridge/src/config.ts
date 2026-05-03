@@ -16,6 +16,19 @@ const trimmedNonEmpty = (msg: string) =>
     .transform((s) => s.trim())
     .pipe(z.string().min(1, msg));
 
+// Format: <providerID>/<modelID>, e.g. "anthropic/claude-sonnet-4-5".
+// Identifiers can include alphanumerics, dot, underscore, and dash.
+const MODEL_ID_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
+
+const modelId = z
+  .string()
+  .transform((s) => s.trim())
+  .pipe(
+    z
+      .string()
+      .regex(MODEL_ID_RE, "must be in the form <providerID>/<modelID>"),
+  );
+
 // Note: Telegram user IDs > 2^53 lose precision via JSON.parse, matching grammy's Context["from"]["id"]: number contract.
 const userIdList = z
   .string()
@@ -54,6 +67,10 @@ const Schema = z.object({
   OPENCODE_PASSWORD: trimmedNonEmpty("OPENCODE_PASSWORD is required"),
   WORKSPACE_ROOT: z.string().min(1).default("/workspace"),
   LOG_LEVEL: z.enum(LOG_LEVELS).default("info"),
+  // Default model used when chat-state has no per-chat model override.
+  // Without this, opencode picks its own default which may not match the
+  // provider account the bridge has authenticated against.
+  DEFAULT_MODEL: modelId.default("anthropic/claude-sonnet-4-5"),
 });
 
 export interface Config {
@@ -64,6 +81,7 @@ export interface Config {
   opencodePassword: string;
   workspaceRoot: string;
   logLevel: LogLevel;
+  defaultModel: string;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -86,5 +104,23 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     opencodePassword: parsed.OPENCODE_PASSWORD,
     workspaceRoot: parsed.WORKSPACE_ROOT,
     logLevel: parsed.LOG_LEVEL,
+    defaultModel: parsed.DEFAULT_MODEL,
   };
+}
+
+/**
+ * Parse a "<providerID>/<modelID>" string into the structured form expected
+ * by opencode. Returns undefined if the input doesn't match the expected
+ * shape (callers should treat that as "use server default").
+ *
+ * Splits on the FIRST "/" so multi-segment model IDs like
+ * "openrouter/anthropic/claude-sonnet-4-5" parse as
+ * { providerID: "openrouter", modelID: "anthropic/claude-sonnet-4-5" }.
+ */
+export function parseModelId(
+  raw: string,
+): { providerID: string; modelID: string } | undefined {
+  const idx = raw.indexOf("/");
+  if (idx <= 0 || idx === raw.length - 1) return undefined;
+  return { providerID: raw.slice(0, idx), modelID: raw.slice(idx + 1) };
 }

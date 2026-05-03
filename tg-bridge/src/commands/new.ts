@@ -1,5 +1,6 @@
 import type { Context } from "grammy";
 import { escapeMarkdownV2 } from "../format.js";
+import { describeError } from "../errors.js";
 import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
 
@@ -19,14 +20,18 @@ export async function handleNew(ctx: Context, deps: NewDeps): Promise<void> {
     return;
   }
 
-  const session = await deps.client.createSession(
-    `tg:${current.projectPath.split("/").pop() ?? "session"}`,
-  );
-  await deps.client.prompt(
-    session.id,
-    `You are working on a project located at \`${current.projectPath}\`. ` +
-      `Use this as the working directory for all file operations.`,
-  );
+  let session: { id: string };
+  try {
+    session = await deps.client.createSession(
+      `tg:${current.projectPath.split("/").pop() ?? "session"}`,
+      { directory: current.projectPath },
+    );
+  } catch (err) {
+    await ctx.reply(escapeMarkdownV2(`❌ Failed to start new session: ${describeError(err)}`), {
+      parse_mode: "MarkdownV2",
+    });
+    return;
+  }
   deps.state.setSession(chatId, session.id);
 
   await ctx.reply(

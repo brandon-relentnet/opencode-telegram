@@ -1,6 +1,8 @@
 import type { Context } from "grammy";
 import { escapeMarkdownV2 } from "./format.js";
 import { Turn, type TurnBot } from "./turn.js";
+import { describeError } from "./errors.js";
+import { parseModelId } from "./config.js";
 import type { OpencodeClient } from "./opencode-client.js";
 import type { ChatStateRepo } from "./chat-state.js";
 import type { SessionEventHandler } from "./event-router.js";
@@ -14,6 +16,11 @@ export interface MessageHandlerDeps {
   };
   permissions: Pick<PermissionService, "sendRequest">;
   bot: TurnBot;
+  /**
+   * Default model used when the chat has no per-chat model override.
+   * Format: "<providerID>/<modelID>" (e.g. "anthropic/claude-sonnet-4-5").
+   */
+  defaultModel: string;
 }
 
 interface IncomingTextPart {
@@ -22,35 +29,6 @@ interface IncomingTextPart {
   text?: string;
   tool?: string;
   state?: { status: string; input?: unknown; output?: string };
-}
-
-/**
- * Convert any thrown value into a human-readable string. The opencode SDK
- * rejects with discriminated-union plain objects (e.g. `ApiError`) that are
- * not `Error` instances, so `String(err)` produces "[object Object]".
- */
-function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (typeof err === "string") return err;
-  if (
-    err &&
-    typeof err === "object" &&
-    "message" in err &&
-    typeof (err as { message: unknown }).message === "string"
-  ) {
-    return (err as { message: string }).message;
-  }
-  try {
-    return JSON.stringify(err);
-  } catch {
-    return "unknown error";
-  }
-}
-
-function parseModel(modelId: string): { providerID: string; modelID: string } | undefined {
-  const idx = modelId.indexOf("/");
-  if (idx <= 0 || idx === modelId.length - 1) return undefined;
-  return { providerID: modelId.slice(0, idx), modelID: modelId.slice(idx + 1) };
 }
 
 export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps): Promise<void> {
@@ -106,9 +84,17 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
 
   const unregister = deps.router.registerSession(sessionId, handler);
 
-  const model = stateRow.model ? parseModel(stateRow.model) : undefined;
+  // Resolve the effective model: per-chat override → bridge-wide default.
+  // We always pass *something* — letting opencode pick its own default lands
+  // on whatever provider's first model alphabetically, which may not match
+  // the auth account the bridge has.
+  const effectiveModelId = stateRow.model ?? deps.defaultModel;
+  const model = parseModelId(effectiveModelId);
   try {
-    await deps.client.prompt(sessionId, text, model ? { model } : undefined);
+    await deps.client.prompt(sessionId, text, {
+      ...(model ? { model } : {}),
+      directory: stateRow.projectPath,
+    });
   } catch (err) {
     const msg = describeError(err);
     await turn.showError(`prompt failed: ${msg}`);

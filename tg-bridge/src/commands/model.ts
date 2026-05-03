@@ -1,5 +1,6 @@
 import type { Context } from "grammy";
 import { escapeMarkdownV2 } from "../format.js";
+import { describeError } from "../errors.js";
 import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
 
@@ -14,8 +15,9 @@ interface ProviderRecord {
   [k: string]: unknown;
 }
 
+// Allow multi-segment model IDs like openrouter/anthropic/claude-sonnet-4-5.
 function isValidModelId(s: string): boolean {
-  return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(s);
+  return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(s);
 }
 
 export async function handleModel(ctx: Context, deps: ModelDeps): Promise<void> {
@@ -24,7 +26,17 @@ export async function handleModel(ctx: Context, deps: ModelDeps): Promise<void> 
 
   if (arg.length === 0) {
     const current = deps.state.get(chatId);
-    const { providers, default: defaults } = await deps.client.listProviders();
+    let providersResp: { providers: unknown[]; default: Record<string, string> };
+    try {
+      providersResp = await deps.client.listProviders();
+    } catch (err) {
+      await ctx.reply(
+        escapeMarkdownV2(`❌ Failed to list providers: ${describeError(err)}`),
+        { parse_mode: "MarkdownV2" },
+      );
+      return;
+    }
+    const { providers, default: defaults } = providersResp;
     const lines = [
       `*${escapeMarkdownV2("Model")}*`,
       escapeMarkdownV2(`Current: ${current?.model ?? "(default)"}`),

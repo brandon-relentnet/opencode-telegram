@@ -49,6 +49,8 @@ function makeBot() {
   };
 }
 
+const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5";
+
 describe("handleTextMessage", () => {
   let state: ChatStateRepo;
 
@@ -67,13 +69,14 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      defaultModel: DEFAULT_MODEL,
     });
     expect(ctx.reply).toHaveBeenCalledOnce();
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/\/switch/);
     expect(client.prompt).not.toHaveBeenCalled();
   });
 
-  it("with project+session: sends placeholder, registers handler, calls client.prompt", async () => {
+  it("with project+session: sends placeholder, registers handler, calls client.prompt with default model + directory", async () => {
     state.setProject(1, "/workspace/a", "ses_a");
     const ctx = makeFakeCtx({ chatId: 1, text: "do the thing" });
     // Emulate placeholder send via ctx.reply (returning the placeholder message id)
@@ -88,15 +91,19 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      defaultModel: DEFAULT_MODEL,
     });
     expect(ctx.reply).toHaveBeenCalledOnce();
     expect(router.registerSession).toHaveBeenCalledWith("ses_a", expect.any(Object));
-    expect(client.prompt).toHaveBeenCalledWith("ses_a", "do the thing", undefined);
+    expect(client.prompt).toHaveBeenCalledWith("ses_a", "do the thing", {
+      model: { providerID: "anthropic", modelID: "claude-sonnet-4-5" },
+      directory: "/workspace/a",
+    });
   });
 
-  it("passes the configured model to client.prompt", async () => {
+  it("per-chat model overrides the default", async () => {
     state.setProject(1, "/workspace/a", "ses_a");
-    state.setModel(1, "anthropic/claude-sonnet-4-5");
+    state.setModel(1, "openai/gpt-5");
     const ctx = makeFakeCtx({ chatId: 1, text: "hello" });
     ctx.reply.mockResolvedValue({ message_id: 555 });
     const router = makeRouter();
@@ -108,9 +115,11 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      defaultModel: DEFAULT_MODEL,
     });
     expect(client.prompt).toHaveBeenCalledWith("ses_a", "hello", {
-      model: { providerID: "anthropic", modelID: "claude-sonnet-4-5" },
+      model: { providerID: "openai", modelID: "gpt-5" },
+      directory: "/workspace/a",
     });
   });
 
@@ -129,6 +138,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      defaultModel: DEFAULT_MODEL,
     });
     expect(bot.editMessageText).toHaveBeenCalled();
     const args = bot.editMessageText.mock.calls[0]!;
@@ -153,6 +163,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      defaultModel: DEFAULT_MODEL,
     });
     const args = bot.editMessageText.mock.calls[0]!;
     const text = String(args[2]);
@@ -174,6 +185,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: permissions as never,
+      defaultModel: DEFAULT_MODEL,
     });
     const handler = router.registered!;
     handler.onPermissionUpdated({ id: "p1", sessionID: "ses_a", title: "ok?", type: "bash" });

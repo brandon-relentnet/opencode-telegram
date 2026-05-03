@@ -57,6 +57,7 @@ OPENCODE_SERVER_PASSWORD=$PASSWORD
 INSTALL_GO_LSP=false
 INSTALL_RUST_LSP=false
 LOG_LEVEL=info
+DEFAULT_MODEL=anthropic/claude-sonnet-4-5
 WORKSPACE_HOST_PATH=/mnt/user/code
 APPDATA_HOST_PATH=/mnt/user/appdata/opencode
 EOF

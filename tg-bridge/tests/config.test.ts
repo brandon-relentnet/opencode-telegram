@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { loadConfig, ConfigError } from "../src/config.js";
+import { loadConfig, ConfigError, parseModelId } from "../src/config.js";
 
 describe("loadConfig", () => {
   const validEnv = {
@@ -17,6 +17,7 @@ describe("loadConfig", () => {
     expect(cfg.opencodePassword).toBe("secret");
     expect(cfg.workspaceRoot).toBe("/workspace");
     expect(cfg.logLevel).toBe("info");
+    expect(cfg.defaultModel).toBe("anthropic/claude-sonnet-4-5");
   });
 
   it("trims whitespace and ignores empty entries in user IDs", () => {
@@ -72,5 +73,55 @@ describe("loadConfig", () => {
     });
     expect(cfg.telegramBotToken).toBe("123:abc");
     expect(cfg.opencodePassword).toBe("secret");
+  });
+
+  it("accepts a custom DEFAULT_MODEL", () => {
+    const cfg = loadConfig({ ...validEnv, DEFAULT_MODEL: "anthropic/claude-opus-4-5" });
+    expect(cfg.defaultModel).toBe("anthropic/claude-opus-4-5");
+  });
+
+  it("accepts a multi-segment DEFAULT_MODEL like openrouter/anthropic/claude-sonnet-4-5", () => {
+    const cfg = loadConfig({
+      ...validEnv,
+      DEFAULT_MODEL: "openrouter/anthropic/claude-sonnet-4-5",
+    });
+    expect(cfg.defaultModel).toBe("openrouter/anthropic/claude-sonnet-4-5");
+  });
+
+  it("rejects a DEFAULT_MODEL without a slash", () => {
+    expect(() => loadConfig({ ...validEnv, DEFAULT_MODEL: "anthropic" })).toThrow(/DEFAULT_MODEL/);
+  });
+
+  it("trims whitespace on DEFAULT_MODEL", () => {
+    const cfg = loadConfig({ ...validEnv, DEFAULT_MODEL: "  openai/gpt-5  " });
+    expect(cfg.defaultModel).toBe("openai/gpt-5");
+  });
+});
+
+describe("parseModelId", () => {
+  it("parses a simple providerID/modelID", () => {
+    expect(parseModelId("anthropic/claude-sonnet-4-5")).toEqual({
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4-5",
+    });
+  });
+
+  it("splits on the FIRST slash for multi-segment models", () => {
+    expect(parseModelId("openrouter/anthropic/claude-sonnet-4-5")).toEqual({
+      providerID: "openrouter",
+      modelID: "anthropic/claude-sonnet-4-5",
+    });
+  });
+
+  it("returns undefined for input with no slash", () => {
+    expect(parseModelId("just-a-name")).toBeUndefined();
+  });
+
+  it("returns undefined for input ending with a slash", () => {
+    expect(parseModelId("anthropic/")).toBeUndefined();
+  });
+
+  it("returns undefined for input starting with a slash", () => {
+    expect(parseModelId("/foo")).toBeUndefined();
   });
 });
