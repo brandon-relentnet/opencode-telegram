@@ -65,8 +65,12 @@ export function buildInitPrompt(name: string): string {
  * Build the deterministic prompt sent to opencode for an /init-remote command.
  *
  * Runs the full create-local-+-create-remote-+-push sequence in a single bash
- * invocation so the agent can't fork into multiple commands. `gh` reads
- * GH_TOKEN from its environment automatically — no embedded token needed.
+ * invocation so the agent can't fork into multiple commands.
+ *
+ * IMPORTANT: we do NOT use `gh repo create --push` because GitHub's API
+ * returns success on the create endpoint before the repo's git endpoint is
+ * fully propagated, so the immediate push hits a 404 race intermittently.
+ * Instead we create the repo, then loop the push with backoff (3 attempts).
  */
 export function buildInitRemotePrompt(name: string, owner: string): string {
   return [
@@ -79,12 +83,30 @@ export function buildInitRemotePrompt(name: string, owner: string): string {
     `git init`,
     `echo "# ${name}" > README.md`,
     `git add README.md && git commit -m "Initial commit"`,
-    `gh repo create ${owner}/${name} --private --source=. --remote=origin --push`,
+    `# Create the GitHub repo + add the origin remote (no auto-push here).`,
+    `# GitHub's create API returns before the git endpoint is propagated;`,
+    `# an immediate push hits 'repository not found' intermittently.`,
+    `gh repo create ${owner}/${name} --private --source=. --remote=origin`,
+    `# Push with backoff to absorb the propagation lag (~1-3 seconds).`,
+    `for attempt in 1 2 3 4 5; do`,
+    `  if git push -u origin main 2>&1; then`,
+    `    PUSHED=1`,
+    `    break`,
+    `  fi`,
+    `  sleep $attempt`,
+    `done`,
+    `if [ -z "\${PUSHED:-}" ]; then`,
+    `  echo "failed: git push to ${owner}/${name} failed after 5 attempts (15s of backoff)"`,
+    `  exit 0`,
+    `fi`,
+    `echo "remote_initialized"`,
     "```",
     "",
-    "If every command succeeds, reply with the single word: remote_initialized",
+    "If the script prints `remote_initialized`, reply with that single word.",
     "",
-    "If any command fails, reply with: failed: <one-sentence summary of the error>",
+    "If the script prints `failed: ...`, reply with that exact line.",
+    "",
+    "If any command fails before the script reaches its end, reply with: failed: <one-sentence summary of the error>",
   ].join("\n");
 }
 

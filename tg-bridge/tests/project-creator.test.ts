@@ -420,12 +420,28 @@ describe("buildInitRemotePrompt", () => {
     expect(out).toContain("gh repo create brandon/new-site");
   });
 
-  it("creates the dir + git init + initial commit + gh push in a single bash block", () => {
+  it("creates the dir + git init + initial commit in a single bash block", () => {
     const out = buildInitRemotePrompt("x", "owner");
     expect(out).toContain("mkdir -p /workspace/x");
     expect(out).toContain("git init");
     expect(out).toContain("git add README.md && git commit -m");
-    expect(out).toContain("--private --source=. --remote=origin --push");
+    expect(out).toContain("--private --source=. --remote=origin");
+  });
+
+  it("creates the GitHub repo without --push to avoid the propagation race", () => {
+    // GitHub returns success on the create API before the repo's git endpoint
+    // is fully propagated. `gh repo create --push` does the push immediately
+    // and intermittently hits "repository not found". We split create and push.
+    const out = buildInitRemotePrompt("x", "owner");
+    expect(out).not.toContain("--push");
+  });
+
+  it("retries `git push` with backoff to absorb the propagation lag", () => {
+    const out = buildInitRemotePrompt("x", "owner");
+    expect(out).toContain("for attempt in 1 2 3 4 5;");
+    expect(out).toContain("git push -u origin main");
+    expect(out).toContain("sleep $attempt");
+    expect(out).toContain("after 5 attempts");
   });
 
   it("ends with the marker contract (remote_initialized or failed:)", () => {
