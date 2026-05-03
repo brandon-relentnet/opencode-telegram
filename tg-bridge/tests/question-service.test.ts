@@ -571,3 +571,104 @@ describe("QuestionService — custom answers", () => {
     expect(client._replies).toHaveLength(0);
   });
 });
+
+describe("QuestionService — opencode-side cleanup", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("notifyReplied edits all pending question messages to show opencode's answers and clears state", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_r1",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Q1",
+          header: "H1",
+          options: [{ label: "A", description: "" }],
+        },
+        {
+          question: "Q2",
+          header: "H2",
+          options: [{ label: "X", description: "" }],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    // opencode auto-defaults
+    await service.notifyReplied({
+      sessionID: "ses_1",
+      requestID: "qst_r1",
+      answers: [["A"], ["X"]],
+    });
+    // Each question's message should be edited to a final form mentioning the answer
+    const editsByMsgId = new Map<number, string>();
+    for (const e of bot._editedMessages) editsByMsgId.set(e.messageId, e.text);
+    expect(editsByMsgId.size).toBeGreaterThanOrEqual(2);
+    for (const [, text] of editsByMsgId) {
+      expect(text.toLowerCase()).toMatch(/resolved|opencode/);
+    }
+    // No new submission to opencode (we didn't gather these)
+    expect(client._replies).toHaveLength(0);
+  });
+
+  it("notifyRejected edits all pending question messages to show cancelled and clears state", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_rj1",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Q",
+          header: "H",
+          options: [{ label: "A", description: "" }],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    await service.notifyRejected({ sessionID: "ses_1", requestID: "qst_rj1" });
+    const lastEdit = bot._editedMessages[bot._editedMessages.length - 1]!;
+    expect(lastEdit.text.toLowerCase()).toMatch(/cancelled|rejected/);
+  });
+
+  it("notifyReplied for an unknown request is a silent no-op", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    await service.notifyReplied({
+      sessionID: "ses_x",
+      requestID: "qst_unknown",
+      answers: [],
+    });
+    expect(bot._editedMessages).toHaveLength(0);
+  });
+
+  it("after notifyReplied, isAwaitingCustomAnswer for that chat returns false", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_r2",
+      sessionID: "ses_1",
+      questions: [{ question: "Q", header: "H", options: [{ label: "A", description: "" }] }],
+    };
+    await service.sendRequest(42, req);
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_r2:0:custom",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    expect(service.isAwaitingCustomAnswer(42)).toBe(true);
+    await service.notifyReplied({
+      sessionID: "ses_1",
+      requestID: "qst_r2",
+      answers: [["A"]],
+    });
+    expect(service.isAwaitingCustomAnswer(42)).toBe(false);
+  });
+});

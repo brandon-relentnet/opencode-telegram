@@ -419,6 +419,49 @@ export class QuestionService {
     }
   }
 
+  async notifyReplied(payload: QuestionRepliedEvent): Promise<void> {
+    const entry = this.pending.get(payload.requestID);
+    if (!entry || entry.resolved) return;
+    entry.resolved = true;
+    clearTimeout(entry.timer);
+    // Edit each question's message to show what opencode received
+    for (let i = 0; i < entry.questions.length; i++) {
+      const q = entry.questions[i]!;
+      const state = entry.questionStates[i]!;
+      if (state.messageId === null) continue;
+      const ocAnswers = payload.answers[i] ?? [];
+      const summary = ocAnswers.length > 0 ? ocAnswers.join(", ") : "(none)";
+      const text = `✓ *${escapeMarkdownV2(q.header)}*: ${escapeMarkdownV2(summary)}\n_${escapeMarkdownV2("(resolved by opencode)")}_`;
+      await this.bot
+        .editMessageText(entry.chatId, state.messageId, text, { parse_mode: "MarkdownV2" })
+        .catch((err) => this.log?.warn?.({ err, requestId: payload.requestID }, "editMessageText (notifyReplied) failed"));
+    }
+    if (this.awaiting.get(entry.chatId)?.requestId === payload.requestID) {
+      this.awaiting.delete(entry.chatId);
+    }
+    this.pending.delete(payload.requestID);
+  }
+
+  async notifyRejected(payload: QuestionRejectedEvent): Promise<void> {
+    const entry = this.pending.get(payload.requestID);
+    if (!entry || entry.resolved) return;
+    entry.resolved = true;
+    clearTimeout(entry.timer);
+    for (let i = 0; i < entry.questions.length; i++) {
+      const q = entry.questions[i]!;
+      const state = entry.questionStates[i]!;
+      if (state.messageId === null) continue;
+      const text = `❌ *${escapeMarkdownV2(q.header)}*: ${escapeMarkdownV2("cancelled by opencode")}`;
+      await this.bot
+        .editMessageText(entry.chatId, state.messageId, text, { parse_mode: "MarkdownV2" })
+        .catch((err) => this.log?.warn?.({ err, requestId: payload.requestID }, "editMessageText (notifyRejected) failed"));
+    }
+    if (this.awaiting.get(entry.chatId)?.requestId === payload.requestID) {
+      this.awaiting.delete(entry.chatId);
+    }
+    this.pending.delete(payload.requestID);
+  }
+
   private renderQuestionMessage(q: QuestionInfo, state: PerQuestionState): string {
     const lines: string[] = [
       `*${escapeMarkdownV2(q.header)}*`,
