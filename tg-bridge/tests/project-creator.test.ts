@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import {
   buildClonePrompt,
   buildInitPrompt,
+  buildInitRemotePrompt,
   detectSuccess,
   createProject,
   type MaybeTextPart,
@@ -409,5 +410,65 @@ describe("createProject", () => {
         deps,
       ),
     ).rejects.toThrow();
+  });
+});
+
+describe("buildInitRemotePrompt", () => {
+  it("references the project name and owner", () => {
+    const out = buildInitRemotePrompt("new-site", "brandon");
+    expect(out).toContain("/workspace/new-site");
+    expect(out).toContain("gh repo create brandon/new-site");
+  });
+
+  it("creates the dir + git init + initial commit + gh push in a single bash block", () => {
+    const out = buildInitRemotePrompt("x", "owner");
+    expect(out).toContain("mkdir -p /workspace/x");
+    expect(out).toContain("git init");
+    expect(out).toContain("git add README.md && git commit -m");
+    expect(out).toContain("--private --source=. --remote=origin --push");
+  });
+
+  it("ends with the marker contract (remote_initialized or failed:)", () => {
+    const out = buildInitRemotePrompt("x", "owner");
+    expect(out).toContain("remote_initialized");
+    expect(out).toMatch(/failed:/);
+  });
+});
+
+describe("detectSuccess for init-remote", () => {
+  it("matches \\bremote_initialized\\b in the last text part", () => {
+    expect(
+      detectSuccess(
+        [
+          { type: "text", text: "Running command..." },
+          { type: "text", text: "remote_initialized" },
+        ],
+        "init-remote",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches verbose markers like 'Successfully remote_initialized the repo'", () => {
+    expect(
+      detectSuccess(
+        [{ type: "text", text: "Successfully remote_initialized the repo" }],
+        "init-remote",
+      ),
+    ).toBe(true);
+  });
+
+  it("hard-fails on leading 'failed:' even if remote_initialized appears", () => {
+    expect(
+      detectSuccess(
+        [{ type: "text", text: "failed: gh repo create returned exit 1; would have remote_initialized" }],
+        "init-remote",
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects 'initialized' alone (must be the full word)", () => {
+    expect(
+      detectSuccess([{ type: "text", text: "initialized" }], "init-remote"),
+    ).toBe(false);
   });
 });

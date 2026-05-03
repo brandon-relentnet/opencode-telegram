@@ -22,7 +22,7 @@ import { buildSwitchConfirmation } from "./commands/switch.js";
 import { describeError } from "./errors.js";
 import { parseModelId } from "./config.js";
 
-export type CreationKind = "clone" | "init";
+export type CreationKind = "clone" | "init" | "init-remote";
 
 /**
  * Minimal shape detectSuccess needs from each part. Both real callers
@@ -62,6 +62,33 @@ export function buildInitPrompt(name: string): string {
 }
 
 /**
+ * Build the deterministic prompt sent to opencode for an /init-remote command.
+ *
+ * Runs the full create-local-+-create-remote-+-push sequence in a single bash
+ * invocation so the agent can't fork into multiple commands. `gh` reads
+ * GH_TOKEN from its environment automatically — no embedded token needed.
+ */
+export function buildInitRemotePrompt(name: string, owner: string): string {
+  return [
+    "Run exactly this single bash command and report only the result. Do not run any other commands. Do not summarize or explore the new repository.",
+    "",
+    "```bash",
+    `set -e`,
+    `mkdir -p /workspace/${name}`,
+    `cd /workspace/${name}`,
+    `git init`,
+    `echo "# ${name}" > README.md`,
+    `git add README.md && git commit -m "Initial commit"`,
+    `gh repo create ${owner}/${name} --private --source=. --remote=origin --push`,
+    "```",
+    "",
+    "If every command succeeds, reply with the single word: remote_initialized",
+    "",
+    "If any command fails, reply with: failed: <one-sentence summary of the error>",
+  ].join("\n");
+}
+
+/**
  * Inspect the assistant message parts for a creation-success marker.
  *
  * Uses the LAST non-empty text part — the agent's final reply per our
@@ -88,7 +115,16 @@ export function detectSuccess<P extends MaybeTextPart>(
   if (/^failed:/i.test(last)) return false;
   // Match the marker as a contained word, so verbose replies like
   // "Successfully initialized the directory" also match.
-  const marker = kind === "clone" ? /\bcloned\b/i : /\binitialized\b/i;
+  // Order matters: test init-remote before init. \binitialized\b would NOT
+  // match "remote_initialized" anyway because `_` is a word char (so \b sits
+  // at the start of "remote", not at "initialized"), but explicit ordering
+  // makes the intent obvious.
+  const marker =
+    kind === "clone"
+      ? /\bcloned\b/i
+      : kind === "init-remote"
+      ? /\bremote_initialized\b/i
+      : /\binitialized\b/i;
   return marker.test(last);
 }
 
@@ -99,6 +135,8 @@ export interface CreateProjectArgs {
   kind: CreationKind;
   /** Required when kind === "clone". */
   url?: string;
+  /** Required when kind === "init-remote". GitHub owner namespace. */
+  owner?: string;
   workspaceRoot: string;
 }
 
@@ -134,6 +172,9 @@ export async function createProject(
   if (args.kind === "clone" && !args.url) {
     throw new Error("createProject: kind=clone requires a url argument");
   }
+  if (args.kind === "init-remote" && !args.owner) {
+    throw new Error("createProject: kind=init-remote requires an owner argument");
+  }
 
   // Ensure SSE subscription on the workspace root so the one-shot session's
   // events reach our handler. Idempotent.
@@ -149,6 +190,8 @@ export async function createProject(
   const prompt =
     args.kind === "clone"
       ? buildClonePrompt(args.url!, args.name)
+      : args.kind === "init-remote"
+      ? buildInitRemotePrompt(args.name, args.owner ?? "")
       : buildInitPrompt(args.name);
 
   // Set up the streaming Turn for the placeholder.
