@@ -13,7 +13,17 @@ describe("handleHelp", () => {
   });
 
   it("HELP_TEXT lists all the commands the bridge supports", () => {
-    for (const cmd of ["/new", "/projects", "/switch", "/abort", "/status", "/model", "/help"]) {
+    for (const cmd of [
+      "/new",
+      "/projects",
+      "/switch",
+      "/clone",
+      "/init",
+      "/abort",
+      "/status",
+      "/model",
+      "/help",
+    ]) {
       expect(HELP_TEXT).toContain(cmd);
     }
   });

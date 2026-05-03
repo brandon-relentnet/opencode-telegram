@@ -10,6 +10,8 @@ import { PermissionService } from "./permissions.js";
 import { handleHelp } from "./commands/help.js";
 import { handleProjects } from "./commands/projects.js";
 import { handleSwitch } from "./commands/switch.js";
+import { handleClone } from "./commands/clone.js";
+import { handleInit } from "./commands/init.js";
 import { handleNew } from "./commands/new.js";
 import { handleAbort } from "./commands/abort.js";
 import { handleStatus } from "./commands/status.js";
@@ -89,6 +91,28 @@ async function main(): Promise<void> {
   bot.command("projects", (ctx) => handleProjects(ctx, { workspaceRoot: config.workspaceRoot }));
   bot.command("switch", (ctx) =>
     handleSwitch(ctx, { client, state, workspaceRoot: config.workspaceRoot, router }),
+  );
+  bot.command("clone", (ctx) =>
+    handleClone(ctx, {
+      client,
+      state,
+      router,
+      bot: turnBot,
+      workspaceRoot: config.workspaceRoot,
+      defaultModel: config.defaultModel,
+      log,
+    }),
+  );
+  bot.command("init", (ctx) =>
+    handleInit(ctx, {
+      client,
+      state,
+      router,
+      bot: turnBot,
+      workspaceRoot: config.workspaceRoot,
+      defaultModel: config.defaultModel,
+      log,
+    }),
   );
   bot.command("new", (ctx) => handleNew(ctx, { client, state, router }));
   bot.command("abort", (ctx) => handleAbort(ctx, { client, state }));

@@ -7,6 +7,8 @@ const RAW = [
   "/new — start a new session in the current project",
   "/projects — list available projects under /workspace",
   "/switch <name> — switch to a project (creates a new session)",
+  "/clone <git-url> [name] — clone a git repository into /workspace",
+  "/init <name> — create an empty new project under /workspace (with git init)",
   "/abort — abort the current running task",
   "/status — show current project, session, and model",
   "/model [providerID/modelID] — show or set the model",
