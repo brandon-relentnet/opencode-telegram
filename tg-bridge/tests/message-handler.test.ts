@@ -51,6 +51,18 @@ function makeBot() {
   };
 }
 
+/**
+ * Stub QuestionService dependency. The handler only calls these three
+ * methods; use this when a test doesn't care about question routing.
+ */
+function makeQuestions() {
+  return {
+    sendRequest: vi.fn(async (_chatId: number, _req: unknown) => undefined),
+    notifyReplied: vi.fn(async (_payload: unknown) => undefined),
+    notifyRejected: vi.fn(async (_payload: unknown) => undefined),
+  };
+}
+
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5";
 
 /** Wait for queued microtasks to drain (lets fire-and-forget .catch run). */
@@ -74,6 +86,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
     });
     expect(ctx.reply).toHaveBeenCalledOnce();
@@ -96,6 +109,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
     });
     expect(ctx.reply).toHaveBeenCalledOnce();
@@ -120,6 +134,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
     });
     expect(client.prompt).toHaveBeenCalledWith("ses_a", "hello", {
@@ -143,6 +158,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
     });
     // Error path is asynchronous (.catch on fire-and-forget prompt) so we
@@ -171,6 +187,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
     });
     await tick();
@@ -194,6 +211,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: permissions as never,
+      questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
     });
     const handler = router.registered!;
@@ -238,6 +256,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
       log,
     });
@@ -278,6 +297,7 @@ describe("handleTextMessage", () => {
       router,
       bot,
       permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
     });
 
@@ -291,5 +311,69 @@ describe("handleTextMessage", () => {
     // Verify: we got past handleTextMessage, the prompt is still in flight.
     expect(client.prompt).toHaveBeenCalled();
     expect(promptResolved).toBe(false);
+  });
+
+  it("forwards question.asked to questions.sendRequest", async () => {
+    state.setProject(1, "/workspace/x", "ses_42");
+    const ctx = makeFakeCtx({ chatId: 1, text: "hello" });
+    ctx.reply.mockResolvedValue({ message_id: 999 });
+    const router = makeRouter();
+    const client = makeClient();
+    const bot = makeBot();
+    const questions = makeQuestions();
+    await handleTextMessage(ctx as never, {
+      state,
+      client,
+      router,
+      bot,
+      permissions: { sendRequest: vi.fn() } as never,
+      questions,
+      defaultModel: DEFAULT_MODEL,
+    });
+    const handler = router.registered!;
+    expect(handler.onQuestionAsked).toBeDefined();
+    handler.onQuestionAsked!({ id: "qst_1", sessionID: "ses_42", questions: [] });
+    // sendRequest is fire-and-forget; let the microtask queue drain
+    await tick();
+    expect(questions.sendRequest).toHaveBeenCalledTimes(1);
+    expect(questions.sendRequest).toHaveBeenCalledWith(1, {
+      id: "qst_1",
+      sessionID: "ses_42",
+      questions: [],
+    });
+  });
+
+  it("forwards question.replied and question.rejected to QuestionService", async () => {
+    state.setProject(1, "/workspace/x", "ses_42");
+    const ctx = makeFakeCtx({ chatId: 1, text: "hello" });
+    ctx.reply.mockResolvedValue({ message_id: 999 });
+    const router = makeRouter();
+    const client = makeClient();
+    const bot = makeBot();
+    const questions = makeQuestions();
+    await handleTextMessage(ctx as never, {
+      state,
+      client,
+      router,
+      bot,
+      permissions: { sendRequest: vi.fn() } as never,
+      questions,
+      defaultModel: DEFAULT_MODEL,
+    });
+    const handler = router.registered!;
+    expect(handler.onQuestionReplied).toBeDefined();
+    expect(handler.onQuestionRejected).toBeDefined();
+    handler.onQuestionReplied!({ sessionID: "ses_42", requestID: "qst_1", answers: [] });
+    handler.onQuestionRejected!({ sessionID: "ses_42", requestID: "qst_2" });
+    await tick();
+    expect(questions.notifyReplied).toHaveBeenCalledWith({
+      sessionID: "ses_42",
+      requestID: "qst_1",
+      answers: [],
+    });
+    expect(questions.notifyRejected).toHaveBeenCalledWith({
+      sessionID: "ses_42",
+      requestID: "qst_2",
+    });
   });
 });

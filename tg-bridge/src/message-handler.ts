@@ -16,6 +16,16 @@ export interface MessageHandlerDeps {
     registerSession(sessionId: string, handler: SessionEventHandler): () => void;
   };
   permissions: Pick<PermissionService, "sendRequest">;
+  /**
+   * Question service for rendering opencode's question tool calls as
+   * Telegram inline keyboards. The handler forwards onQuestionAsked /
+   * onQuestionReplied / onQuestionRejected here.
+   */
+  questions: {
+    sendRequest(chatId: number, req: unknown): Promise<void>;
+    notifyReplied(payload: unknown): Promise<void>;
+    notifyRejected(payload: unknown): Promise<void>;
+  };
   bot: TurnBot;
   /**
    * Default model used when the chat has no per-chat model override.
@@ -112,6 +122,38 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
             "failed to send permission prompt to telegram",
           );
         });
+    },
+    onQuestionAsked(req) {
+      const requestId = (req as { id?: string })?.id;
+      deps.log?.info?.({ chatId, sessionId, requestId }, "question.asked event received");
+      deps.questions
+        .sendRequest(chatId, req)
+        .catch((err) => {
+          deps.log?.error?.(
+            { chatId, sessionId, requestId, err: describeError(err) },
+            "questions.sendRequest failed",
+          );
+        });
+    },
+    onQuestionReplied(payload) {
+      const requestId = (payload as { requestID?: string })?.requestID;
+      deps.log?.info?.({ chatId, sessionId, requestId }, "question.replied event received");
+      deps.questions.notifyReplied(payload).catch((err) => {
+        deps.log?.error?.(
+          { chatId, sessionId, requestId, err: describeError(err) },
+          "questions.notifyReplied failed",
+        );
+      });
+    },
+    onQuestionRejected(payload) {
+      const requestId = (payload as { requestID?: string })?.requestID;
+      deps.log?.info?.({ chatId, sessionId, requestId }, "question.rejected event received");
+      deps.questions.notifyRejected(payload).catch((err) => {
+        deps.log?.error?.(
+          { chatId, sessionId, requestId, err: describeError(err) },
+          "questions.notifyRejected failed",
+        );
+      });
     },
   };
 

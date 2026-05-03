@@ -7,6 +7,7 @@ import { ChatStateRepo, openChatStateDb } from "./chat-state.js";
 import { makeOpencodeClient } from "./opencode-client.js";
 import { EventRouter } from "./event-router.js";
 import { PermissionService } from "./permissions.js";
+import { QuestionService } from "./question-service.js";
 import { handleHelp } from "./commands/help.js";
 import { handleProjects } from "./commands/projects.js";
 import { handleSwitch } from "./commands/switch.js";
@@ -83,6 +84,8 @@ async function main(): Promise<void> {
     log,
   });
 
+  const questions = new QuestionService(permBot as never, client, { log });
+
   // 1) Whitelist gate runs before everything else.
   bot.use(whitelistMiddleware(config.allowedUserIds));
 
@@ -119,7 +122,7 @@ async function main(): Promise<void> {
   bot.command("status", (ctx) => handleStatus(ctx, { state }));
   bot.command("model", (ctx) => handleModel(ctx, { client, state }));
 
-  // 3) Permission button callbacks.
+  // 3) Permission + question button callbacks.
   bot.on("callback_query:data", async (ctx) => {
     log.info(
       {
@@ -130,12 +133,13 @@ async function main(): Promise<void> {
       },
       "callback_query received",
     );
+    const data = ctx.callbackQuery.data ?? "";
     // Build the callback object conditionally to satisfy
     // exactOptionalPropertyTypes (don't pass `message: undefined`).
     const msg = ctx.callbackQuery.message;
-    await permissions.handleCallback({
+    const cb = {
       id: ctx.callbackQuery.id,
-      data: ctx.callbackQuery.data,
+      data,
       ...(msg
         ? {
             message: {
@@ -144,21 +148,49 @@ async function main(): Promise<void> {
             },
           }
         : {}),
-    });
+    };
+    // Route by callback-data prefix. `qst:` belongs to QuestionService;
+    // anything else (notably `perm:`) goes to PermissionService.
+    if (data.startsWith("qst:")) {
+      await questions.handleCallback(cb);
+      return;
+    }
+    await permissions.handleCallback(cb);
   });
 
   // 4) Default text handler.
-  bot.on("message:text", (ctx) =>
-    handleTextMessage(ctx, {
+  bot.on("message:text", async (ctx) => {
+    const chatId = ctx.chat?.id;
+    const text = ctx.message?.text;
+    // Intercept text intended as a custom-typed answer to a pending question.
+    // Slash commands (`/...`) are NOT intercepted — those go to bot.command()
+    // first; this handler only fires for non-command text. Without this gate
+    // the user's typed answer would be re-sent to opencode as a brand new
+    // prompt, which is exactly what the question flow tries to avoid.
+    if (
+      typeof chatId === "number" &&
+      typeof text === "string" &&
+      !text.startsWith("/") &&
+      questions.isAwaitingCustomAnswer(chatId)
+    ) {
+      try {
+        await questions.handleCustomAnswer(chatId, text);
+      } catch (err) {
+        log.error({ err, chatId }, "questions.handleCustomAnswer failed");
+      }
+      return;
+    }
+    await handleTextMessage(ctx, {
       state,
       client,
       router,
       permissions,
+      questions,
       bot: turnBot,
       defaultModel: config.defaultModel,
       log,
-    }),
-  );
+    });
+  });
 
   // 5) Catch any error thrown out of a handler so a single buggy turn doesn't
   // kill the bot loop. grammy's default behaviour on unhandled errors is to
