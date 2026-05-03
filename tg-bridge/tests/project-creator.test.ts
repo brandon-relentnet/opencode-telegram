@@ -5,6 +5,7 @@ import {
   buildInitPrompt,
   detectSuccess,
   createProject,
+  type MaybeTextPart,
 } from "../src/project-creator.js";
 import { ChatStateRepo } from "../src/chat-state.js";
 import type { OpencodeClient } from "../src/opencode-client.js";
@@ -36,70 +37,128 @@ describe("buildInitPrompt", () => {
 });
 
 describe("detectSuccess", () => {
-  it("returns true for clone success when text starts with 'cloned'", () => {
-    const parts = [{ id: "p1", type: "text", text: "cloned" }];
-    expect(detectSuccess(parts, "clone")).toBe(true);
-  });
-
-  it("returns true for init success when text starts with 'initialized'", () => {
-    const parts = [{ id: "p1", type: "text", text: "initialized" }];
-    expect(detectSuccess(parts, "init")).toBe(true);
-  });
-
-  it("is case-insensitive on the success marker", () => {
-    expect(detectSuccess([{ id: "p1", type: "text", text: "Cloned" }], "clone")).toBe(true);
-    expect(detectSuccess([{ id: "p1", type: "text", text: "INITIALIZED" }], "init")).toBe(true);
-  });
-
-  it("matches when success marker is followed by extra text", () => {
-    expect(
-      detectSuccess([{ id: "p1", type: "text", text: "cloned successfully" }], "clone"),
-    ).toBe(true);
-  });
-
-  it("does not match partial-prefix words (uses word boundary)", () => {
-    // "clonedown" should NOT match "cloned\b"
-    expect(
-      detectSuccess([{ id: "p1", type: "text", text: "clonedown" }], "clone"),
-    ).toBe(false);
-  });
-
-  it("does not match the wrong-kind marker", () => {
-    expect(detectSuccess([{ id: "p1", type: "text", text: "initialized" }], "clone")).toBe(false);
-    expect(detectSuccess([{ id: "p1", type: "text", text: "cloned" }], "init")).toBe(false);
-  });
-
-  it("returns false for an explicit failure response", () => {
-    expect(
-      detectSuccess([{ id: "p1", type: "text", text: "failed: auth error" }], "clone"),
-    ).toBe(false);
-  });
-
-  it("returns false for empty parts", () => {
+  it("returns false for empty parts array", () => {
+    expect(detectSuccess([], "init")).toBe(false);
     expect(detectSuccess([], "clone")).toBe(false);
   });
 
-  it("ignores tool parts and concatenates only text parts in order", () => {
-    const parts = [
-      { id: "t1", type: "tool", tool: "bash", state: { status: "completed", input: { command: "x" } } },
-      { id: "p1", type: "text", text: "cloned" },
-    ];
-    expect(detectSuccess(parts, "clone")).toBe(true);
-  });
-
-  it("uses the first text part for marker detection (so trailing chatter is OK)", () => {
-    // Concatenated text starts with 'cloned' → matches
-    const parts = [
-      { id: "p1", type: "text", text: "cloned" },
-      { id: "p2", type: "text", text: "and the directory now exists" },
-    ];
-    expect(detectSuccess(parts, "clone")).toBe(true);
-  });
-
-  it("returns false when text does not start with the marker", () => {
+  it("returns false when no text parts are present", () => {
     expect(
-      detectSuccess([{ id: "p1", type: "text", text: "I cloned the repo" }], "clone"),
+      detectSuccess(
+        [{ type: "tool", tool: "bash", state: { status: "completed", input: { command: "x" } } } as MaybeTextPart],
+        "init",
+      ),
     ).toBe(false);
+  });
+
+  it("matches a single 'initialized' text part for init", () => {
+    expect(detectSuccess([{ type: "text", text: "initialized" }], "init")).toBe(true);
+  });
+
+  it("matches a single 'cloned' text part for clone", () => {
+    expect(detectSuccess([{ type: "text", text: "cloned" }], "clone")).toBe(true);
+  });
+
+  it("matches the LAST text part when earlier text parts contain preamble (init)", () => {
+    expect(
+      detectSuccess(
+        [
+          { type: "text", text: "I need to run the exact command you specified." },
+          { type: "tool", tool: "bash", state: { status: "completed", input: { command: "x" } } },
+          { type: "text", text: "initialized" },
+        ],
+        "init",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches the LAST text part when earlier text parts contain preamble (clone)", () => {
+    expect(
+      detectSuccess(
+        [
+          { type: "text", text: "I'll clone that for you now." },
+          { type: "tool", tool: "bash", state: { status: "completed", input: { command: "x" } } },
+          { type: "text", text: "cloned" },
+        ],
+        "clone",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches a verbose final reply containing the marker as a word (init)", () => {
+    expect(
+      detectSuccess(
+        [{ type: "text", text: "Successfully initialized the project at /workspace/foo." }],
+        "init",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches a verbose final reply containing the marker as a word (clone)", () => {
+    expect(
+      detectSuccess(
+        [{ type: "text", text: "I have cloned the repository into /workspace/foo." }],
+        "clone",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false when the last text part starts with 'failed:' even if it contains the marker", () => {
+    expect(
+      detectSuccess(
+        [{ type: "text", text: "failed: was already initialized" }],
+        "init",
+      ),
+    ).toBe(false);
+    expect(
+      detectSuccess(
+        [{ type: "text", text: "failed: target was already cloned" }],
+        "clone",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when 'failed:' has trailing whitespace differences", () => {
+    // Confirms /^failed:/i is case-insensitive but anchored at start
+    expect(detectSuccess([{ type: "text", text: "Failed: foo" }], "init")).toBe(false);
+    expect(detectSuccess([{ type: "text", text: "FAILED: bar" }], "clone")).toBe(false);
+  });
+
+  it("returns false when only 'initialize' (root word, missing 'd') appears (init)", () => {
+    expect(
+      detectSuccess(
+        [{ type: "text", text: "I will run init to initialize the directory." }],
+        "init",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when only 'clone' (verb, not past-tense) appears (clone)", () => {
+    expect(
+      detectSuccess(
+        [{ type: "text", text: "I'll clone the repo now." }],
+        "clone",
+      ),
+    ).toBe(false);
+  });
+
+  it("ignores empty/whitespace-only text parts when finding the last", () => {
+    expect(
+      detectSuccess(
+        [
+          { type: "text", text: "preamble" },
+          { type: "text", text: "initialized" },
+          { type: "text", text: "" },
+          { type: "text", text: "   " },
+        ],
+        "init",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false when the wrong marker appears (cloned in an init request)", () => {
+    expect(detectSuccess([{ type: "text", text: "cloned" }], "init")).toBe(false);
+    expect(detectSuccess([{ type: "text", text: "initialized" }], "clone")).toBe(false);
   });
 });
 

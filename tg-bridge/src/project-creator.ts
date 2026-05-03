@@ -30,7 +30,7 @@ export type CreationKind = "clone" | "init";
  * structurally — detectSuccess is generic over the concrete shape so no
  * cast is required at the call site.
  */
-interface MaybeTextPart {
+export interface MaybeTextPart {
   type: string;
   text?: string;
 }
@@ -63,20 +63,33 @@ export function buildInitPrompt(name: string): string {
 
 /**
  * Inspect the assistant message parts for a creation-success marker.
- * Concatenates all text parts in arrival order, trims, and checks the
- * resulting string starts with the expected word ("cloned" or "initialized")
- * followed by a word boundary. Case-insensitive.
+ *
+ * Uses the LAST non-empty text part — the agent's final reply per our
+ * prompt contract. Earlier text parts may be preamble narration like
+ * "I need to run the exact command...". The marker is matched as a
+ * contained word (\binitialized\b / \bcloned\b) so verbose replies like
+ * "Successfully initialized the directory" also match. A leading
+ * /^failed:/i in the last part is a hard-fail signal and short-circuits
+ * to false, even if the marker word also appears.
  */
-export function detectSuccess<P extends MaybeTextPart>(parts: readonly P[], kind: CreationKind): boolean {
-  const text = parts
+export function detectSuccess<P extends MaybeTextPart>(
+  parts: readonly P[],
+  kind: CreationKind,
+): boolean {
+  // Use the LAST non-empty text part — the agent's final reply per our
+  // prompt contract. Earlier text parts may be preamble narration like
+  // "I need to run the exact command...".
+  const textParts = parts
     .filter((p) => p.type === "text" && typeof p.text === "string")
     .map((p) => (p.text ?? "").trim())
-    .filter((t) => t.length > 0)
-    .join("\n")
-    .trim();
-  if (text.length === 0) return false;
-  const marker = kind === "clone" ? /^cloned\b/i : /^initialized\b/i;
-  return marker.test(text);
+    .filter((t) => t.length > 0);
+  const last = textParts.at(-1) ?? "";
+  // Hard fail signal: agent followed our "failed: ..." contract.
+  if (/^failed:/i.test(last)) return false;
+  // Match the marker as a contained word, so verbose replies like
+  // "Successfully initialized the directory" also match.
+  const marker = kind === "clone" ? /\bcloned\b/i : /\binitialized\b/i;
+  return marker.test(last);
 }
 
 export interface CreateProjectArgs {
