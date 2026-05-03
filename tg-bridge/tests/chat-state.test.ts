@@ -74,4 +74,28 @@ describe("ChatStateRepo", () => {
     expect(repo.get(1)!.projectPath).toBe("/workspace/a");
     expect(repo.get(2)!.projectPath).toBe("/workspace/b");
   });
+
+  describe("getDistinctProjectPaths", () => {
+    it("returns an empty array when no chats have a project set", () => {
+      expect(repo.getDistinctProjectPaths()).toEqual([]);
+    });
+
+    it("returns each unique project_path exactly once, sorted", () => {
+      repo.setProject(1, "/workspace/zeta", "ses_1");
+      repo.setProject(2, "/workspace/alpha", "ses_2");
+      repo.setProject(3, "/workspace/zeta", "ses_3"); // duplicate path, different chat
+      repo.setProject(4, "/workspace/beta", "ses_4");
+      expect(repo.getDistinctProjectPaths()).toEqual([
+        "/workspace/alpha",
+        "/workspace/beta",
+        "/workspace/zeta",
+      ]);
+    });
+
+    it("excludes rows whose project_path is null (e.g. setSession-only chats)", () => {
+      repo.setProject(1, "/workspace/a", "ses_1");
+      repo.setSession(2, "ses_b"); // creates a row with null project_path
+      expect(repo.getDistinctProjectPaths()).toEqual(["/workspace/a"]);
+    });
+  });
 });

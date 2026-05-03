@@ -22,6 +22,10 @@ function makeFakeClient(overrides: Partial<OpencodeClient> = {}): OpencodeClient
   } as OpencodeClient;
 }
 
+function makeRouter() {
+  return { ensureDirectory: vi.fn(() => true) };
+}
+
 describe("handleSwitch", () => {
   let workspaceRoot: string;
   let state: ChatStateRepo;
@@ -37,32 +41,39 @@ describe("handleSwitch", () => {
   it("rejects when no argument is given", async () => {
     const ctx = makeFakeCtx({ match: "" });
     const client = makeFakeClient();
-    await handleSwitch(ctx as never, { client, state, workspaceRoot });
+    const router = makeRouter();
+    await handleSwitch(ctx as never, { client, state, workspaceRoot, router });
     expect(ctx.reply).toHaveBeenCalledOnce();
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/usage/i);
     expect(client.createSession).not.toHaveBeenCalled();
+    expect(router.ensureDirectory).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown project", async () => {
     const ctx = makeFakeCtx({ match: "missing" });
     const client = makeFakeClient();
-    await handleSwitch(ctx as never, { client, state, workspaceRoot });
+    const router = makeRouter();
+    await handleSwitch(ctx as never, { client, state, workspaceRoot, router });
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/no such project/i);
     expect(client.createSession).not.toHaveBeenCalled();
+    expect(router.ensureDirectory).not.toHaveBeenCalled();
   });
 
   it("rejects path-traversal arguments", async () => {
     const ctx = makeFakeCtx({ match: "../etc" });
     const client = makeFakeClient();
-    await handleSwitch(ctx as never, { client, state, workspaceRoot });
+    const router = makeRouter();
+    await handleSwitch(ctx as never, { client, state, workspaceRoot, router });
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/invalid/i);
     expect(client.createSession).not.toHaveBeenCalled();
+    expect(router.ensureDirectory).not.toHaveBeenCalled();
   });
 
-  it("creates a new session anchored to the project directory and stores state", async () => {
+  it("creates a new session anchored to the project directory, stores state, AND opens an SSE subscription for the directory", async () => {
     const ctx = makeFakeCtx({ chatId: 42, match: "myapp" });
     const client = makeFakeClient();
-    await handleSwitch(ctx as never, { client, state, workspaceRoot });
+    const router = makeRouter();
+    await handleSwitch(ctx as never, { client, state, workspaceRoot, router });
 
     // Session created with the directory query param so opencode anchors the
     // session to the worktree (auto-creating a Project record). NO seed prompt
@@ -77,6 +88,10 @@ describe("handleSwitch", () => {
     expect(stored.projectPath).toBe(join(workspaceRoot, "myapp"));
     expect(stored.sessionId).toBe("ses_new");
 
+    // Critical: SSE subscription opened for this directory so the user's
+    // first prompt's events route correctly.
+    expect(router.ensureDirectory).toHaveBeenCalledWith(join(workspaceRoot, "myapp"));
+
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/myapp/);
   });
 
@@ -88,8 +103,10 @@ describe("handleSwitch", () => {
         throw { name: "BadRequest", message: "model not found" };
       }),
     });
-    await handleSwitch(ctx as never, { client, state, workspaceRoot });
+    const router = makeRouter();
+    await handleSwitch(ctx as never, { client, state, workspaceRoot, router });
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/failed to switch.*model not found/i);
     expect(state.get(42)).toBeNull();
+    expect(router.ensureDirectory).not.toHaveBeenCalled();
   });
 });

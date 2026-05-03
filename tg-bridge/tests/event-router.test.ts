@@ -52,6 +52,13 @@ function makePushable<T>(): Pushable<T> {
   };
 }
 
+const TEST_DIR = "/workspace/test";
+
+/**
+ * Build a client that, for any subscribeToEvents(signal, directory) call,
+ * returns the single supplied stream. Used by tests that only need one
+ * directory's worth of events.
+ */
 function makeClientWithStream(stream: AsyncIterable<unknown>): OpencodeClient {
   return {
     createSession: vi.fn(),
@@ -65,6 +72,31 @@ function makeClientWithStream(stream: AsyncIterable<unknown>): OpencodeClient {
   } as OpencodeClient;
 }
 
+/**
+ * Build a client that returns a different stream per `directory` argument.
+ * Use to test that events from one dir don't leak to another's handlers.
+ */
+function makeClientWithStreamMap(map: Map<string, AsyncIterable<unknown>>): OpencodeClient {
+  const subscribe = vi.fn(
+    (_signal: AbortSignal, directory?: string): AsyncIterable<unknown> => {
+      if (!directory) throw new Error("test: subscribe called without directory");
+      const stream = map.get(directory);
+      if (!stream) throw new Error(`test: no stream registered for ${directory}`);
+      return stream;
+    },
+  );
+  return {
+    createSession: vi.fn(),
+    abortSession: vi.fn(),
+    listSessions: vi.fn(async () => []),
+    prompt: vi.fn(),
+    listProjects: vi.fn(async () => []),
+    listProviders: vi.fn(async () => ({ providers: [], default: {} })),
+    respondToPermission: vi.fn(async () => true),
+    subscribeToEvents: subscribe,
+  } as OpencodeClient;
+}
+
 function makeHandler(): SessionEventHandler {
   return {
     onPartUpdated: vi.fn(),
@@ -74,7 +106,10 @@ function makeHandler(): SessionEventHandler {
   };
 }
 
-describe("EventRouter", () => {
+/** Wait for the next microtask tick to let async iteration drain. */
+const tick = () => new Promise((r) => setImmediate(r));
+
+describe("EventRouter — dispatch", () => {
   it("dispatches message.part.updated to the handler for that session", async () => {
     const pushable = makePushable<unknown>();
     const client = makeClientWithStream(pushable.iterable());
@@ -82,7 +117,7 @@ describe("EventRouter", () => {
     const handler = makeHandler();
     router.registerSession("ses_1", handler);
     const ac = new AbortController();
-    const runPromise = router.start(ac.signal);
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
 
     pushable.push({
       type: "message.part.updated",
@@ -92,7 +127,7 @@ describe("EventRouter", () => {
       },
     });
 
-    await new Promise((r) => setImmediate(r));
+    await tick();
     expect(handler.onPartUpdated).toHaveBeenCalledWith({
       id: "prt_1",
       sessionID: "ses_1",
@@ -111,7 +146,7 @@ describe("EventRouter", () => {
     const client = makeClientWithStream(pushable.iterable());
     const router = new EventRouter(client);
     const ac = new AbortController();
-    const runPromise = router.start(ac.signal);
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
 
     pushable.push({
       type: "message.part.updated",
@@ -120,8 +155,7 @@ describe("EventRouter", () => {
         delta: "hi",
       },
     });
-    await new Promise((r) => setImmediate(r));
-    // No throw, no crash.
+    await tick();
 
     ac.abort();
     pushable.end();
@@ -135,14 +169,14 @@ describe("EventRouter", () => {
     const handler = makeHandler();
     router.registerSession("ses_1", handler);
     const ac = new AbortController();
-    const runPromise = router.start(ac.signal);
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
 
     pushable.push({ type: "session.idle", properties: { sessionID: "ses_1" } });
     pushable.push({
       type: "session.error",
       properties: { sessionID: "ses_1", error: { name: "Boom", message: "x" } },
     });
-    await new Promise((r) => setImmediate(r));
+    await tick();
 
     expect(handler.onIdle).toHaveBeenCalledOnce();
     expect(handler.onError).toHaveBeenCalledOnce();
@@ -159,7 +193,7 @@ describe("EventRouter", () => {
     const handler = makeHandler();
     router.registerSession("ses_1", handler);
     const ac = new AbortController();
-    const runPromise = router.start(ac.signal);
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
 
     const perm = {
       id: "perm_x",
@@ -169,7 +203,7 @@ describe("EventRouter", () => {
       input: { command: "ls" },
     };
     pushable.push({ type: "permission.updated", properties: perm });
-    await new Promise((r) => setImmediate(r));
+    await tick();
 
     expect(handler.onPermissionUpdated).toHaveBeenCalledWith(perm);
 
@@ -184,14 +218,14 @@ describe("EventRouter", () => {
     const log = { warn: vi.fn() };
     const router = new EventRouter(client, log);
     const ac = new AbortController();
-    const runPromise = router.start(ac.signal);
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
 
     // session.error with no sessionID — must not be silently dropped.
     pushable.push({
       type: "session.error",
       properties: { error: { name: "ApiError", message: "infra failure" } },
     });
-    await new Promise((r) => setImmediate(r));
+    await tick();
 
     expect(log.warn).toHaveBeenCalledWith(
       { eventType: "session.error" },
@@ -209,10 +243,10 @@ describe("EventRouter", () => {
     const log = { warn: vi.fn() };
     const router = new EventRouter(client, log);
     const ac = new AbortController();
-    const runPromise = router.start(ac.signal);
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
 
     pushable.push({ type: "server.connected", properties: {} });
-    await new Promise((r) => setImmediate(r));
+    await tick();
 
     expect(log.warn).not.toHaveBeenCalled();
 
@@ -228,7 +262,7 @@ describe("EventRouter", () => {
     const handler = makeHandler();
     const unregister = router.registerSession("ses_1", handler);
     const ac = new AbortController();
-    const runPromise = router.start(ac.signal);
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
 
     unregister();
     pushable.push({
@@ -238,11 +272,171 @@ describe("EventRouter", () => {
         delta: "x",
       },
     });
-    await new Promise((r) => setImmediate(r));
+    await tick();
     expect(handler.onPartUpdated).not.toHaveBeenCalled();
 
     ac.abort();
     pushable.end();
     await runPromise;
+  });
+});
+
+describe("EventRouter — multi-directory subscriptions", () => {
+  it("opens one subscription per initial directory and passes the directory to subscribeToEvents", async () => {
+    const a = makePushable<unknown>();
+    const b = makePushable<unknown>();
+    const map = new Map<string, AsyncIterable<unknown>>([
+      ["/workspace/a", a.iterable()],
+      ["/workspace/b", b.iterable()],
+    ]);
+    const client = makeClientWithStreamMap(map);
+    const router = new EventRouter(client);
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, ["/workspace/a", "/workspace/b"]);
+
+    await tick();
+    const calls = (client.subscribeToEvents as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const dirs = calls.map((c) => c[1]).sort();
+    expect(dirs).toEqual(["/workspace/a", "/workspace/b"]);
+
+    ac.abort();
+    a.end();
+    b.end();
+    await runPromise;
+  });
+
+  it("ensureDirectory is idempotent — duplicate calls don't open extra subscriptions", async () => {
+    const a = makePushable<unknown>();
+    const map = new Map<string, AsyncIterable<unknown>>([
+      ["/workspace/a", a.iterable()],
+    ]);
+    const client = makeClientWithStreamMap(map);
+    const router = new EventRouter(client);
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, []);
+
+    expect(router.ensureDirectory("/workspace/a")).toBe(true);
+    expect(router.ensureDirectory("/workspace/a")).toBe(false); // already open
+    expect(router.ensureDirectory("/workspace/a")).toBe(false);
+
+    await tick();
+    expect((client.subscribeToEvents as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+
+    ac.abort();
+    a.end();
+    await runPromise;
+  });
+
+  it("ensureDirectory ignores empty/blank input", async () => {
+    const client = makeClientWithStreamMap(new Map());
+    const router = new EventRouter(client);
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, []);
+
+    expect(router.ensureDirectory("")).toBe(false);
+    expect(router.ensureDirectory(undefined as unknown as string)).toBe(false);
+
+    expect((client.subscribeToEvents as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+
+    ac.abort();
+    await runPromise;
+  });
+
+  it("events from one directory's stream don't reach handlers via the wrong subscription", async () => {
+    // Both directories deliver a session-routed event; verify the handler
+    // sees both events (since handler routing is by sessionID, not by dir).
+    // The point of this test is that both subscriptions are active and
+    // independent — neither blocks the other.
+    const a = makePushable<unknown>();
+    const b = makePushable<unknown>();
+    const map = new Map<string, AsyncIterable<unknown>>([
+      ["/workspace/a", a.iterable()],
+      ["/workspace/b", b.iterable()],
+    ]);
+    const client = makeClientWithStreamMap(map);
+    const router = new EventRouter(client);
+    const handlerA = makeHandler();
+    const handlerB = makeHandler();
+    router.registerSession("ses_a", handlerA);
+    router.registerSession("ses_b", handlerB);
+
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, ["/workspace/a", "/workspace/b"]);
+
+    a.push({
+      type: "message.part.updated",
+      properties: {
+        part: { id: "p1", sessionID: "ses_a", messageID: "m1", type: "text", text: "from-a" },
+      },
+    });
+    b.push({
+      type: "message.part.updated",
+      properties: {
+        part: { id: "p2", sessionID: "ses_b", messageID: "m2", type: "text", text: "from-b" },
+      },
+    });
+    await tick();
+
+    expect(handlerA.onPartUpdated).toHaveBeenCalledOnce();
+    expect(handlerB.onPartUpdated).toHaveBeenCalledOnce();
+    expect(handlerA.onPartUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "from-a" }),
+    );
+    expect(handlerB.onPartUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "from-b" }),
+    );
+
+    ac.abort();
+    a.end();
+    b.end();
+    await runPromise;
+  });
+
+  it("ensureDirectory called after start() opens a new subscription on demand", async () => {
+    const a = makePushable<unknown>();
+    const map = new Map<string, AsyncIterable<unknown>>([
+      ["/workspace/a", a.iterable()],
+    ]);
+    const client = makeClientWithStreamMap(map);
+    const router = new EventRouter(client);
+    const handler = makeHandler();
+    router.registerSession("ses_a", handler);
+
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, []); // no initial dirs
+
+    // No subscriptions opened yet
+    await tick();
+    expect((client.subscribeToEvents as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+
+    // Lazy add (e.g. /switch fired)
+    expect(router.ensureDirectory("/workspace/a")).toBe(true);
+    await tick();
+
+    // Now an event flows
+    a.push({
+      type: "message.part.updated",
+      properties: {
+        part: { id: "p1", sessionID: "ses_a", messageID: "m1", type: "text", text: "delivered" },
+      },
+    });
+    await tick();
+    expect(handler.onPartUpdated).toHaveBeenCalledOnce();
+
+    ac.abort();
+    a.end();
+    await runPromise;
+  });
+
+  it("ensureDirectory is a no-op once the parent signal has aborted", async () => {
+    const client = makeClientWithStreamMap(new Map());
+    const router = new EventRouter(client);
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, []);
+    ac.abort();
+    await runPromise;
+
+    expect(router.ensureDirectory("/workspace/late")).toBe(false);
+    expect((client.subscribeToEvents as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 });

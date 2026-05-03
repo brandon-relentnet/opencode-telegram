@@ -39,6 +39,7 @@ function rowToState(row: Row): ChatState {
 
 export class ChatStateRepo {
   private getStmt: Database.Statement<[number]>;
+  private distinctPathsStmt: Database.Statement;
   private upsertProjectStmt: Database.Statement;
   private upsertSessionStmt: Database.Statement;
   private upsertModelStmt: Database.Statement;
@@ -47,6 +48,9 @@ export class ChatStateRepo {
   constructor(private db: Database.Database) {
     db.exec(SCHEMA);
     this.getStmt = db.prepare("SELECT * FROM chat_state WHERE chat_id = ?");
+    this.distinctPathsStmt = db.prepare(
+      "SELECT DISTINCT project_path FROM chat_state WHERE project_path IS NOT NULL ORDER BY project_path",
+    );
     this.upsertProjectStmt = db.prepare(`
       INSERT INTO chat_state (chat_id, project_path, session_id, updated_at)
       VALUES (@chatId, @projectPath, @sessionId, @now)
@@ -75,6 +79,16 @@ export class ChatStateRepo {
   get(chatId: number): ChatState | null {
     const row = this.getStmt.get(chatId) as Row | undefined;
     return row ? rowToState(row) : null;
+  }
+
+  /**
+   * Return every distinct, non-null project_path the bridge has ever seen.
+   * Used at boot to seed EventRouter SSE subscriptions for known projects so
+   * resumed chats start receiving session events immediately.
+   */
+  getDistinctProjectPaths(): string[] {
+    const rows = this.distinctPathsStmt.all() as Array<{ project_path: string }>;
+    return rows.map((r) => r.project_path);
   }
 
   setProject(chatId: number, projectPath: string, sessionId: string): void {

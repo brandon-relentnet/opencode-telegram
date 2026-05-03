@@ -10,6 +10,13 @@ export interface SwitchDeps {
   client: OpencodeClient;
   state: ChatStateRepo;
   workspaceRoot: string;
+  /**
+   * EventRouter handle so /switch can ensure an SSE subscription exists
+   * for the newly-activated project's directory. Without this, sessions in
+   * a directory the bridge has never subscribed to would emit events into
+   * a scope nothing reads, and the placeholder would hang at "thinking…".
+   */
+  router: { ensureDirectory(directory: string): boolean };
 }
 
 function isSafeProjectName(name: string): boolean {
@@ -53,6 +60,10 @@ export async function handleSwitch(ctx: Context, deps: SwitchDeps): Promise<void
     return;
   }
   deps.state.setProject(ctx.chat!.id, projectPath, session.id);
+  // Ensure the SSE subscription for this project's directory is open before
+  // the user sends their first prompt. Idempotent — no-op if we're already
+  // subscribed (e.g. another chat is in this project, or we hit boot-seed).
+  deps.router.ensureDirectory(projectPath);
 
   await ctx.reply(
     [

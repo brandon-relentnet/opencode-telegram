@@ -101,7 +101,14 @@ export interface BridgeOpencodeClient {
     response: "allow" | "deny",
     remember?: boolean,
   ): Promise<boolean>;
-  subscribeToEvents(signal: AbortSignal): AsyncIterable<unknown>;
+  /**
+   * Subscribe to opencode's SSE event stream. The stream is
+   * directory-scoped server-side: pass `directory` to receive events for
+   * sessions in that worktree. Without a directory, opencode delivers
+   * only events for its container CWD (`/workspace`), missing events
+   * for project-anchored sessions like `/workspace/cbg-invoices`.
+   */
+  subscribeToEvents(signal: AbortSignal, directory?: string): AsyncIterable<unknown>;
 }
 
 /**
@@ -193,8 +200,11 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
       return Boolean(data);
     },
 
-    async *subscribeToEvents(signal) {
-      const sub = await client.event.subscribe({ signal });
+    async *subscribeToEvents(signal, directory) {
+      const sub = await client.event.subscribe({
+        signal,
+        ...(directory ? { query: { directory } } : {}),
+      });
       for await (const evt of sub.stream) {
         if (signal.aborted) return;
         yield evt;

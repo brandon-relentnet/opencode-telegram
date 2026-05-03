@@ -19,6 +19,10 @@ function makeFakeClient(overrides: Partial<OpencodeClient> = {}): OpencodeClient
   } as OpencodeClient;
 }
 
+function makeRouter() {
+  return { ensureDirectory: vi.fn(() => true) };
+}
+
 describe("handleNew", () => {
   let state: ChatStateRepo;
 
@@ -29,16 +33,19 @@ describe("handleNew", () => {
   it("prompts the user to /switch first when no project is set", async () => {
     const ctx = makeFakeCtx({ chatId: 1 });
     const client = makeFakeClient();
-    await handleNew(ctx as never, { client, state });
+    const router = makeRouter();
+    await handleNew(ctx as never, { client, state, router });
     expect(client.createSession).not.toHaveBeenCalled();
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/\/switch/);
+    expect(router.ensureDirectory).not.toHaveBeenCalled();
   });
 
-  it("creates a new session anchored to the current project and updates state", async () => {
+  it("creates a new session anchored to the current project, updates state, and re-ensures the SSE subscription", async () => {
     state.setProject(1, "/workspace/myapp", "ses_old");
     const ctx = makeFakeCtx({ chatId: 1 });
     const client = makeFakeClient();
-    await handleNew(ctx as never, { client, state });
+    const router = makeRouter();
+    await handleNew(ctx as never, { client, state, router });
 
     expect(client.createSession).toHaveBeenCalledOnce();
     expect(client.createSession).toHaveBeenCalledWith("tg:myapp", {
@@ -48,6 +55,7 @@ describe("handleNew", () => {
     const stored = state.get(1)!;
     expect(stored.projectPath).toBe("/workspace/myapp");
     expect(stored.sessionId).toBe("ses_new");
+    expect(router.ensureDirectory).toHaveBeenCalledWith("/workspace/myapp");
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/new session/i);
   });
 
@@ -60,9 +68,11 @@ describe("handleNew", () => {
         throw { name: "BadRequest", message: "boom" };
       }),
     });
-    await handleNew(ctx as never, { client, state });
+    const router = makeRouter();
+    await handleNew(ctx as never, { client, state, router });
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/failed to start new session.*boom/i);
     // Session id wasn't updated since create failed
     expect(state.get(1)!.sessionId).toBe("ses_old");
+    expect(router.ensureDirectory).not.toHaveBeenCalled();
   });
 });

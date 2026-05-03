@@ -87,9 +87,9 @@ async function main(): Promise<void> {
   bot.command("help", (ctx: Context) => handleHelp(ctx));
   bot.command("projects", (ctx) => handleProjects(ctx, { workspaceRoot: config.workspaceRoot }));
   bot.command("switch", (ctx) =>
-    handleSwitch(ctx, { client, state, workspaceRoot: config.workspaceRoot }),
+    handleSwitch(ctx, { client, state, workspaceRoot: config.workspaceRoot, router }),
   );
-  bot.command("new", (ctx) => handleNew(ctx, { client, state }));
+  bot.command("new", (ctx) => handleNew(ctx, { client, state, router }));
   bot.command("abort", (ctx) => handleAbort(ctx, { client, state }));
   bot.command("status", (ctx) => handleStatus(ctx, { state }));
   bot.command("model", (ctx) => handleModel(ctx, { client, state }));
@@ -140,9 +140,15 @@ async function main(): Promise<void> {
     );
   });
 
-  // 6) Start the SSE consumer in the background; never await it.
+  // 6) Start the SSE consumer in the background. Seed it with directories
+  // we know about from chat-state so resumed chats start receiving events
+  // immediately on boot. Never await — start() resolves only on shutdown.
   const ac = new AbortController();
-  void router.start(ac.signal).catch((err) => log.error({ err }, "EventRouter exited"));
+  const initialDirs = state.getDistinctProjectPaths();
+  log.info({ initialDirs }, "seeding event subscriptions");
+  void router
+    .start(ac.signal, initialDirs)
+    .catch((err) => log.error({ err }, "EventRouter exited"));
 
   // 6) Start polling.
   const stop = async () => {

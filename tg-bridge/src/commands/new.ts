@@ -7,6 +7,12 @@ import type { ChatStateRepo } from "../chat-state.js";
 export interface NewDeps {
   client: OpencodeClient;
   state: ChatStateRepo;
+  /**
+   * EventRouter handle so /new can defensively re-ensure the SSE
+   * subscription for the project's directory. Almost always already open
+   * (because /switch opens it), but ensure is idempotent and cheap.
+   */
+  router: { ensureDirectory(directory: string): boolean };
 }
 
 export async function handleNew(ctx: Context, deps: NewDeps): Promise<void> {
@@ -33,6 +39,7 @@ export async function handleNew(ctx: Context, deps: NewDeps): Promise<void> {
     return;
   }
   deps.state.setSession(chatId, session.id);
+  deps.router.ensureDirectory(current.projectPath);
 
   await ctx.reply(
     [
