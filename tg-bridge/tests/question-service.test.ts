@@ -277,3 +277,183 @@ describe("QuestionService — single-select", () => {
     expect(client._replies[0]).toEqual({ requestId: "qst_empty", answers: [] });
   });
 });
+
+describe("QuestionService — multi-select", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders ☐ buttons + Done button for multi-select questions", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_m1",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick features",
+          header: "Features",
+          multiple: true,
+          options: [
+            { label: "Dark mode", description: "" },
+            { label: "Animations", description: "" },
+          ],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    const opts = bot._sentMessages[0]!.opts as { reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } };
+    const flat = opts.reply_markup.inline_keyboard.flat();
+    const labels = flat.map((b) => b.text);
+    // Each option prefixed with ☐
+    expect(labels.some((l) => l === "☐ Dark mode")).toBe(true);
+    expect(labels.some((l) => l === "☐ Animations")).toBe(true);
+    // Done button present
+    expect(labels.some((l) => l === "✅ Done")).toBe(true);
+    // Type your own present (custom defaults to true)
+    expect(labels.some((l) => l.toLowerCase().includes("type your own"))).toBe(true);
+    // tgl callback for options
+    const dmBtn = flat.find((b) => b.text === "☐ Dark mode");
+    expect(dmBtn?.callback_data).toBe("qst:qst_m1:0:tgl:0");
+    const doneBtn = flat.find((b) => b.text === "✅ Done");
+    expect(doneBtn?.callback_data).toBe("qst:qst_m1:0:done");
+  });
+
+  it("on tgl callback, edits keyboard to show ☑ for toggled option, does not submit", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_m2",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick",
+          header: "H",
+          multiple: true,
+          options: [
+            { label: "A", description: "" },
+            { label: "B", description: "" },
+          ],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_m2:0:tgl:0",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    expect(client._replies).toHaveLength(0); // not submitted
+    const lastEdit = bot._editedMessages[bot._editedMessages.length - 1]!;
+    const opts = lastEdit.opts as { reply_markup: { inline_keyboard: Array<Array<{ text: string }>> } };
+    const labels = opts.reply_markup.inline_keyboard.flat().map((b) => b.text);
+    expect(labels.some((l) => l === "☑ A")).toBe(true);
+    expect(labels.some((l) => l === "☐ B")).toBe(true);
+  });
+
+  it("on tgl callback for already-selected option, untoggles it (☑ → ☐)", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_m3",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick",
+          header: "H",
+          multiple: true,
+          options: [{ label: "A", description: "" }],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    // Toggle A on
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_m3:0:tgl:0",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    // Toggle A off
+    await service.handleCallback({
+      id: "cb2",
+      data: "qst:qst_m3:0:tgl:0",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    const lastEdit = bot._editedMessages[bot._editedMessages.length - 1]!;
+    const opts = lastEdit.opts as { reply_markup: { inline_keyboard: Array<Array<{ text: string }>> } };
+    const labels = opts.reply_markup.inline_keyboard.flat().map((b) => b.text);
+    expect(labels.some((l) => l === "☐ A")).toBe(true);
+  });
+
+  it("on done callback, marks question done with current selections and submits if all done", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_m4",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick",
+          header: "H",
+          multiple: true,
+          options: [
+            { label: "A", description: "" },
+            { label: "B", description: "" },
+            { label: "C", description: "" },
+          ],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    // Toggle A and C
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_m4:0:tgl:0",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    await service.handleCallback({
+      id: "cb2",
+      data: "qst:qst_m4:0:tgl:2",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    expect(client._replies).toHaveLength(0);
+    // Done
+    await service.handleCallback({
+      id: "cb3",
+      data: "qst:qst_m4:0:done",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    expect(client._replies).toHaveLength(1);
+    expect(client._replies[0]).toEqual({ requestId: "qst_m4", answers: [["A", "C"]] });
+  });
+
+  it("done with no selections submits an empty answer for that question", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_m5",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick",
+          header: "H",
+          multiple: true,
+          options: [{ label: "A", description: "" }],
+        },
+      ],
+    };
+    await service.sendRequest(42, req);
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_m5:0:done",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+    expect(client._replies).toHaveLength(1);
+    expect(client._replies[0]).toEqual({ requestId: "qst_m5", answers: [[]] });
+  });
+});

@@ -183,7 +183,6 @@ export class QuestionService {
     const q = entry.questions[qIdx]!;
     const state = entry.questionStates[qIdx]!;
 
-    // For V1: only `pick` action is implemented; `tgl`, `custom`, `done` come in later tasks.
     if (action === "pick") {
       if (state.done) {
         await this.bot
@@ -216,7 +215,64 @@ export class QuestionService {
       return true;
     }
 
-    // Unknown action — log and ignore. (Future tasks add tgl/custom/done.)
+    if (action === "tgl") {
+      if (state.done) {
+        await this.bot.answerCallbackQuery(cb.id, { text: "Already answered" }).catch(() => undefined);
+        return true;
+      }
+      if (argIdx === undefined || !Number.isInteger(argIdx) || argIdx < 0 || argIdx >= q.options.length) {
+        this.log?.warn?.({ requestId, qIdx, argIdx }, "qst tgl option index invalid");
+        return true;
+      }
+      const option = q.options[argIdx]!;
+      const idx = state.selected.indexOf(option.label);
+      if (idx >= 0) {
+        state.selected.splice(idx, 1);
+      } else {
+        state.selected.push(option.label);
+      }
+      // Re-render the keyboard (message body stays the same)
+      if (state.messageId !== null) {
+        await this.bot
+          .editMessageText(
+            entry.chatId,
+            state.messageId,
+            this.renderQuestionMessage(q, state),
+            {
+              parse_mode: "MarkdownV2",
+              reply_markup: { inline_keyboard: this.buildKeyboard(requestId, qIdx, q, state) },
+            },
+          )
+          .catch((err) => this.log?.warn?.({ err }, "editMessageText (tgl) failed"));
+      }
+      await this.bot.answerCallbackQuery(cb.id).catch(() => undefined);
+      return true;
+    }
+
+    if (action === "done") {
+      if (state.done) {
+        await this.bot.answerCallbackQuery(cb.id, { text: "Already answered" }).catch(() => undefined);
+        return true;
+      }
+      state.done = true;
+      // Edit the message to show the final selections, remove keyboard
+      if (state.messageId !== null) {
+        await this.bot
+          .editMessageText(
+            entry.chatId,
+            state.messageId,
+            this.renderAnsweredMessage(q, state),
+            { parse_mode: "MarkdownV2" },
+          )
+          .catch((err) => this.log?.warn?.({ err }, "editMessageText (done) failed"));
+      }
+      await this.bot.answerCallbackQuery(cb.id).catch(() => undefined);
+      const allDone = entry.questionStates.every((s) => s.done);
+      if (allDone) await this.submitAll(entry);
+      return true;
+    }
+
+    // Unknown action — log and ignore. (Future tasks add custom.)
     this.log?.warn?.({ action }, "unknown qst callback action; ignoring");
     return true;
   }
@@ -314,21 +370,38 @@ export class QuestionService {
     requestId: string,
     qIdx: number,
     q: QuestionInfo,
-    _state: PerQuestionState,
+    state: PerQuestionState,
   ): Array<Array<{ text: string; callback_data: string }>> {
-    // V1: single-select only. Multi-select buttons (tgl + Done) come in Task 5;
-    // custom-answer button comes in Task 6.
     const rows: Array<Array<{ text: string; callback_data: string }>> = [];
-    for (let i = 0; i < q.options.length; i++) {
-      const opt = q.options[i]!;
-      rows.push([
-        { text: opt.label, callback_data: `qst:${requestId}:${qIdx}:pick:${i}` },
-      ]);
-    }
-    if (q.custom !== false) {
-      rows.push([
-        { text: "✏️ Type your own", callback_data: `qst:${requestId}:${qIdx}:custom` },
-      ]);
+    if (q.multiple === true) {
+      // Multi-select: ☐/☑ toggles, Done button at bottom.
+      for (let i = 0; i < q.options.length; i++) {
+        const opt = q.options[i]!;
+        const checked = state.selected.includes(opt.label);
+        const prefix = checked ? "☑" : "☐";
+        rows.push([
+          { text: `${prefix} ${opt.label}`, callback_data: `qst:${requestId}:${qIdx}:tgl:${i}` },
+        ]);
+      }
+      if (q.custom !== false) {
+        rows.push([
+          { text: "✏️ Type your own", callback_data: `qst:${requestId}:${qIdx}:custom` },
+        ]);
+      }
+      rows.push([{ text: "✅ Done", callback_data: `qst:${requestId}:${qIdx}:done` }]);
+    } else {
+      // Single-select.
+      for (let i = 0; i < q.options.length; i++) {
+        const opt = q.options[i]!;
+        rows.push([
+          { text: opt.label, callback_data: `qst:${requestId}:${qIdx}:pick:${i}` },
+        ]);
+      }
+      if (q.custom !== false) {
+        rows.push([
+          { text: "✏️ Type your own", callback_data: `qst:${requestId}:${qIdx}:custom` },
+        ]);
+      }
     }
     return rows;
   }
