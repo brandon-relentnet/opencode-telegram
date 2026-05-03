@@ -54,6 +54,7 @@ export class ChatStateRepo {
   private deleteStmt: Database.Statement<[number]>;
   private getCoolifyAppStmt: Database.Statement<[number, string]>;
   private upsertCoolifyAppStmt: Database.Statement;
+  private deleteCoolifyAppStmt: Database.Statement<[number, string]>;
 
   constructor(private db: Database.Database) {
     db.exec(SCHEMA);
@@ -86,6 +87,9 @@ export class ChatStateRepo {
     this.deleteStmt = db.prepare("DELETE FROM chat_state WHERE chat_id = ?");
     this.getCoolifyAppStmt = db.prepare(
       "SELECT app_uuid, fqdn FROM coolify_app WHERE chat_id = ? AND project_path = ?",
+    );
+    this.deleteCoolifyAppStmt = db.prepare(
+      "DELETE FROM coolify_app WHERE chat_id = ? AND project_path = ?",
     );
     this.upsertCoolifyAppStmt = db.prepare(`
       INSERT INTO coolify_app (chat_id, project_path, app_uuid, fqdn, updated_at)
@@ -153,6 +157,16 @@ export class ChatStateRepo {
       fqdn,
       now: Date.now(),
     });
+  }
+
+  /**
+   * Remove the cached Coolify app reference for this (chat, project) pair.
+   * Used when /deploy detects the cached app no longer exists in Coolify
+   * (e.g. user deleted it via the Coolify UI). Subsequent /deploy will
+   * re-create the app via the first-deploy path.
+   */
+  clearCoolifyApp(chatId: number, projectPath: string): void {
+    this.deleteCoolifyAppStmt.run(chatId, projectPath);
   }
 }
 

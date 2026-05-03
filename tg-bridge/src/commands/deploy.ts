@@ -113,7 +113,17 @@ export function buildSubsequentDeployPrompt(projectPath: string, appUuid: string
     `git diff --cached --quiet || git commit -m "Updates from Telegram session"`,
     `git push origin main`,
     `# Coolify auto-deploys on push via webhook; this guarantees a build even with no commits.`,
-    `curl -sf -X GET "$COOLIFY_URL/api/v1/deploy?uuid=${appUuid}" -H "Authorization: Bearer $COOLIFY_TOKEN"`,
+    `# -s without -f so we get the response body even on HTTP errors.`,
+    `RESP=$(curl -s -w "\\n___STATUS:%{http_code}" -X GET "$COOLIFY_URL/api/v1/deploy?uuid=${appUuid}" -H "Authorization: Bearer $COOLIFY_TOKEN")`,
+    `STATUS=$(echo "$RESP" | sed -n 's/.*___STATUS://p')`,
+    `BODY=$(echo "$RESP" | sed '$d' | sed 's/___STATUS:[0-9]*$//')`,
+    `if [ "$STATUS" = "404" ]; then`,
+    `  echo "failed: app_not_found: Coolify app ${appUuid} no longer exists (404). The bridge will reset its state on next deploy."`,
+    `  exit 0`,
+    `elif [ "$STATUS" != "200" ] && [ "$STATUS" != "201" ]; then`,
+    `  echo "failed: Coolify HTTP $STATUS: $BODY"`,
+    `  exit 0`,
+    `fi`,
     `echo "deployed"`,
     "```",
     "",
@@ -257,7 +267,24 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
             ].join("\n");
             await safeEdit(deps.bot, chatId, placeholderId, escapeMarkdownV2(lines), deps.log);
           } else if (result?.kind === "failed") {
-            await turn.showError(result.reason);
+            // Special case: subsequent-deploy got 404 from Coolify, meaning
+            // the cached app was deleted (manually or by Coolify cleanup).
+            // Clear stale chat-state so next /deploy creates a fresh app.
+            if (!isFirst && /^app_not_found:/.test(result.reason)) {
+              await turn.cancel();
+              deps.state.clearCoolifyApp(chatId, projectPath);
+              await safeEdit(
+                deps.bot,
+                chatId,
+                placeholderId,
+                escapeMarkdownV2(
+                  "⚠️ The previous Coolify app was deleted. Cleared cached UUID — run /deploy again to create a fresh one.",
+                ),
+                deps.log,
+              );
+            } else {
+              await turn.showError(result.reason);
+            }
           } else {
             // Unparseable reply — let Turn render whatever the agent returned.
             await turn.finalize();
