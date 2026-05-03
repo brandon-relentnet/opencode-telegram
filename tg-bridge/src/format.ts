@@ -111,6 +111,77 @@ export function renderStreamingView(parts: readonly RenderablePart[]): string {
   return lines.join("\n");
 }
 
+/**
+ * Render the muted summary header for the final view: "_used N tools · ...details..._".
+ * Returns "" if no tools are present.
+ */
+export function renderToolSummary(parts: readonly RenderablePart[]): string {
+  const toolParts = parts.filter((p) => p.type === "tool") as Array<{
+    type: "tool";
+    tool: string;
+    state: ToolState;
+  }>;
+  if (toolParts.length === 0) return "";
+
+  // Per-name counts in first-appearance order.
+  const counts = new Map<string, number>();
+  let errorCount = 0;
+  for (const p of toolParts) {
+    counts.set(p.tool, (counts.get(p.tool) ?? 0) + 1);
+    if (p.state.status === "error") errorCount++;
+  }
+
+  const total = toolParts.length;
+  const totalLabel = `${total} ${total === 1 ? "tool" : "tools"}`;
+  const breakdown = Array.from(counts.entries()).map(([name, n]) => `${n} ${name}`);
+  const segments = [totalLabel, ...breakdown];
+  if (errorCount > 0) {
+    segments.push(`${errorCount} ${errorCount === 1 ? "error" : "errors"}`);
+  }
+  // Build "used 5 tools · 3 read · 1 grep · 1 bash · 1 error" then italicize.
+  // Tool names are lowercase ASCII identifiers from opencode, so no escaping
+  // is needed for the static template content.
+  const inner = `used ${segments.join(" · ")}`;
+  return `_${inner}_`;
+}
+
+/**
+ * Concatenate all text parts in order, joined by "\n\n", with each part
+ * escaped via escapeMarkdownV2. Empty / whitespace-only text parts are
+ * skipped. Tool parts are ignored.
+ */
+export function concatenateTextParts(parts: readonly RenderablePart[]): string {
+  const texts: string[] = [];
+  for (const p of parts) {
+    if (p.type !== "text") continue;
+    const text = (p as { text?: string }).text;
+    if (typeof text !== "string") continue;
+    if (text.trim().length === 0) continue;
+    texts.push(escapeMarkdownV2(text));
+  }
+  return texts.join("\n\n");
+}
+
+/**
+ * Render the final reply: muted summary header (if any tools used) +
+ * concatenated text body (if any text present).
+ *
+ * Edge cases:
+ *   - No tools, with text: just the text
+ *   - No tools, no text: "_(no response)_"
+ *   - Tools used, no text: header + "_(no response text)_"
+ *   - Tools used, with text: header + body
+ */
+export function renderFinalView(parts: readonly RenderablePart[]): string {
+  const summary = renderToolSummary(parts);
+  const body = concatenateTextParts(parts);
+
+  if (summary === "" && body === "") return `_${escapeMarkdownV2("(no response)")}_`;
+  if (summary === "") return body;
+  if (body === "") return `${summary}\n\n_${escapeMarkdownV2("(no response text)")}_`;
+  return `${summary}\n\n${body}`;
+}
+
 function summarizeToolInput(toolName: string, input: unknown): string {
   if (input == null || typeof input !== "object") return "";
   const obj = input as Record<string, unknown>;

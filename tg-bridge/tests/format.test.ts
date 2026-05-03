@@ -336,3 +336,173 @@ describe("renderStreamingView", () => {
     expect(out).toBe("❌ bash `bad`\n_thinking…_");
   });
 });
+
+import {
+  renderToolSummary,
+  concatenateTextParts,
+  renderFinalView,
+} from "../src/format.js";
+
+describe("renderToolSummary", () => {
+  it("returns empty string when no tools present", () => {
+    expect(renderToolSummary([])).toBe("");
+    expect(renderToolSummary([{ type: "text", text: "hi" }])).toBe("");
+  });
+
+  it("describes a single tool", () => {
+    expect(
+      renderToolSummary([
+        {
+          type: "tool",
+          tool: "bash",
+          state: { status: "completed", input: { command: "pwd" } },
+        },
+      ]),
+    ).toBe("_used 1 tool · 1 bash_");
+  });
+
+  it("describes multiple tools with per-name breakdown", () => {
+    const parts: RenderablePart[] = [
+      { type: "tool", tool: "read", state: { status: "completed", input: { filePath: "a" } } },
+      { type: "tool", tool: "read", state: { status: "completed", input: { filePath: "b" } } },
+      { type: "tool", tool: "read", state: { status: "completed", input: { filePath: "c" } } },
+      { type: "tool", tool: "grep", state: { status: "completed", input: { pattern: "x" } } },
+      { type: "tool", tool: "bash", state: { status: "completed", input: { command: "pwd" } } },
+    ];
+    expect(renderToolSummary(parts)).toBe(
+      "_used 5 tools · 3 read · 1 grep · 1 bash_",
+    );
+  });
+
+  it("appends an error count when any tool errored", () => {
+    const parts: RenderablePart[] = [
+      { type: "tool", tool: "read", state: { status: "completed", input: { filePath: "a" } } },
+      { type: "tool", tool: "bash", state: { status: "error", input: { command: "bad" } } },
+    ];
+    expect(renderToolSummary(parts)).toBe(
+      "_used 2 tools · 1 read · 1 bash · 1 error_",
+    );
+  });
+
+  it("uses 'errors' (plural) for multiple errors", () => {
+    const parts: RenderablePart[] = [
+      { type: "tool", tool: "bash", state: { status: "error", input: { command: "a" } } },
+      { type: "tool", tool: "bash", state: { status: "error", input: { command: "b" } } },
+      { type: "tool", tool: "bash", state: { status: "error", input: { command: "c" } } },
+    ];
+    expect(renderToolSummary(parts)).toBe(
+      "_used 3 tools · 3 bash · 3 errors_",
+    );
+  });
+
+  it("preserves first-appearance order in the breakdown", () => {
+    const parts: RenderablePart[] = [
+      { type: "tool", tool: "bash", state: { status: "completed", input: { command: "a" } } },
+      { type: "tool", tool: "read", state: { status: "completed", input: { filePath: "b" } } },
+      { type: "tool", tool: "bash", state: { status: "completed", input: { command: "c" } } },
+    ];
+    expect(renderToolSummary(parts)).toBe("_used 3 tools · 2 bash · 1 read_");
+  });
+});
+
+describe("concatenateTextParts", () => {
+  it("returns empty string for no text parts", () => {
+    expect(concatenateTextParts([])).toBe("");
+    expect(
+      concatenateTextParts([
+        {
+          type: "tool",
+          tool: "bash",
+          state: { status: "completed", input: { command: "pwd" } },
+        },
+      ]),
+    ).toBe("");
+  });
+
+  it("escapes a single text part", () => {
+    expect(
+      concatenateTextParts([{ type: "text", text: "hello (world)." }]),
+    ).toBe("hello \\(world\\)\\.");
+  });
+
+  it("joins multiple text parts with double newline, escaping each", () => {
+    expect(
+      concatenateTextParts([
+        { type: "text", text: "let me check." },
+        {
+          type: "tool",
+          tool: "read",
+          state: { status: "completed", input: { filePath: "a" } },
+        },
+        { type: "text", text: "the answer is X." },
+      ]),
+    ).toBe("let me check\\.\n\nthe answer is X\\.");
+  });
+
+  it("ignores empty text parts (after trim)", () => {
+    expect(
+      concatenateTextParts([
+        { type: "text", text: "first" },
+        { type: "text", text: "" },
+        { type: "text", text: "   " },
+        { type: "text", text: "last" },
+      ]),
+    ).toBe("first\n\nlast");
+  });
+});
+
+describe("renderFinalView", () => {
+  it("returns '_(no response)_' for empty parts", () => {
+    expect(renderFinalView([])).toBe("_\\(no response\\)_");
+  });
+
+  it("returns just text when no tools used", () => {
+    expect(
+      renderFinalView([{ type: "text", text: "The answer is 42." }]),
+    ).toBe("The answer is 42\\.");
+  });
+
+  it("returns header + body when tools were used", () => {
+    expect(
+      renderFinalView([
+        { type: "tool", tool: "bash", state: { status: "completed", input: { command: "pwd" } } },
+        { type: "text", text: "Working dir is /workspace." },
+      ]),
+    ).toBe("_used 1 tool · 1 bash_\n\nWorking dir is /workspace\\.");
+  });
+
+  it("returns header + '_(no response text)_' when tools used but no text", () => {
+    expect(
+      renderFinalView([
+        { type: "tool", tool: "bash", state: { status: "completed", input: { command: "pwd" } } },
+      ]),
+    ).toBe("_used 1 tool · 1 bash_\n\n_\\(no response text\\)_");
+  });
+
+  it("includes error count in summary header", () => {
+    expect(
+      renderFinalView([
+        { type: "tool", tool: "bash", state: { status: "error", input: { command: "bad" } } },
+        { type: "text", text: "Failed to run command." },
+      ]),
+    ).toBe(
+      "_used 1 tool · 1 bash · 1 error_\n\nFailed to run command\\.",
+    );
+  });
+
+  it("concatenates multiple text parts", () => {
+    expect(
+      renderFinalView([
+        { type: "text", text: "Let me check the project structure." },
+        {
+          type: "tool",
+          tool: "read",
+          state: { status: "completed", input: { filePath: "a.py" } },
+        },
+        { type: "text", text: "It's a FastAPI app." },
+      ]),
+    ).toBe(
+      "_used 1 tool · 1 read_\n\nLet me check the project structure\\.\n\nIt's a FastAPI app\\.",
+    );
+  });
+});
