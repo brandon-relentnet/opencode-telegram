@@ -139,14 +139,33 @@ export class PermissionService {
 
   async handleCallback(cb: CallbackQuery): Promise<void> {
     const data = cb.data ?? "";
-    if (!data.startsWith("perm:")) return;
+    this.options.log?.info({ callbackId: cb.id, data, pendingSize: this.pending.size }, "handleCallback entered");
+    if (!data.startsWith("perm:")) {
+      this.options.log?.info({ data }, "callback data does not start with perm:, ignoring");
+      return;
+    }
     const parts = data.split(":");
-    if (parts.length !== 3) return;
+    if (parts.length !== 3) {
+      this.options.log?.warn({ data, parts }, "callback data malformed (expected 3 parts)");
+      return;
+    }
     const [, permId, action] = parts as [string, string, string];
+    this.options.log?.info({ permId, action }, "parsed permission callback");
 
     const entry = this.pending.get(permId);
     if (!entry || entry.resolved) {
-      await this.bot.answerCallbackQuery(cb.id, { text: "Already responded" }).catch(() => {});
+      this.options.log?.warn(
+        {
+          permId,
+          inMap: Boolean(entry),
+          resolved: entry?.resolved,
+          knownIds: Array.from(this.pending.keys()),
+        },
+        "no pending permission for this id (likely stale: bridge restarted, or auto-denied after 10min)",
+      );
+      await this.bot
+        .answerCallbackQuery(cb.id, { text: "Already responded or expired" })
+        .catch((err) => this.options.log?.warn({ err }, "answerCallbackQuery failed"));
       return;
     }
     entry.resolved = true;
@@ -162,11 +181,22 @@ export class PermissionService {
     } else if (action === "deny") {
       response = "deny";
     } else {
+      this.options.log?.warn({ action }, "unknown callback action, ignoring");
       return;
     }
 
     try {
+      this.options.log?.info(
+        { permId, response, remember, sessionId: entry.sessionId },
+        "responding to opencode permission",
+      );
       await this.client.respondToPermission(entry.sessionId, permId, response, remember);
+      this.options.log?.info({ permId }, "permission response delivered to opencode");
+    } catch (err) {
+      this.options.log?.error(
+        { permId, err: err instanceof Error ? err.message : String(err) },
+        "respondToPermission failed",
+      );
     } finally {
       const status =
         response === "allow" ? (remember ? "✓ Allowed (always)" : "✅ Allowed once") : "❌ Denied";
@@ -174,8 +204,10 @@ export class PermissionService {
         .editMessageText(entry.chatId, entry.messageId, escapeMarkdownV2(status), {
           parse_mode: "MarkdownV2",
         })
-        .catch(() => undefined);
-      await this.bot.answerCallbackQuery(cb.id).catch(() => undefined);
+        .catch((err) => this.options.log?.warn({ err: String(err) }, "editMessageText failed"));
+      await this.bot
+        .answerCallbackQuery(cb.id)
+        .catch((err) => this.options.log?.warn({ err: String(err) }, "answerCallbackQuery failed"));
       this.pending.delete(permId);
     }
   }

@@ -97,6 +97,15 @@ async function main(): Promise<void> {
 
   // 3) Permission button callbacks.
   bot.on("callback_query:data", async (ctx) => {
+    log.info(
+      {
+        callbackId: ctx.callbackQuery.id,
+        data: ctx.callbackQuery.data,
+        from: ctx.from?.id,
+        chat: ctx.chat?.id,
+      },
+      "callback_query received",
+    );
     // Build the callback object conditionally to satisfy
     // exactOptionalPropertyTypes (don't pass `message: undefined`).
     const msg = ctx.callbackQuery.message;
