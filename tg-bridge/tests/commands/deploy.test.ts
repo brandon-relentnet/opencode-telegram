@@ -172,6 +172,15 @@ describe("buildFirstDeployPrompt", () => {
     expect(prompt).toContain(".domains");
     expect(prompt).not.toContain(".fqdn");
   });
+
+  it("strips the .git suffix from the origin URL (Coolify rejects it)", () => {
+    // `git remote get-url origin` returns an HTTPS URL ending in .git when
+    // gh repo create configured the remote. Coolify's POST endpoint rejects
+    // that with HTTP 404 'Repository not found' because it tries to look up
+    // 'owner/repo.git' (with the suffix as part of the name) on GitHub.
+    const prompt = buildFirstDeployPrompt("/workspace/site");
+    expect(prompt).toContain("sed 's/\\.git$//'");
+  });
 });
 
 describe("buildSubsequentDeployPrompt", () => {
