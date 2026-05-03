@@ -16,11 +16,28 @@ const trimmedNonEmpty = (msg: string) =>
     .transform((s) => s.trim())
     .pipe(z.string().min(1, msg));
 
-const optionalTrimmed = z
-  .string()
-  .transform((s) => s.trim())
-  .pipe(z.string().min(1))
-  .optional();
+// Treats empty / whitespace-only strings as "not set" so compose-style
+// env passthrough (`${VAR:-}` producing "") doesn't trigger validation
+// errors for unset optional integrations.
+const optionalTrimmed = z.preprocess(
+  (v) => {
+    if (typeof v !== "string") return v;
+    const trimmed = v.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  },
+  z.string().min(1).optional(),
+);
+
+// Same pattern for URL fields — empty string from compose passthrough
+// must be coerced to undefined before zod's .url() validator runs.
+const optionalUrl = z.preprocess(
+  (v) => {
+    if (typeof v !== "string") return v;
+    const trimmed = v.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  },
+  z.string().url().optional(),
+);
 
 // Format: <providerID>/<modelID>, e.g. "anthropic/claude-sonnet-4-5".
 // Identifiers can include alphanumerics, dot, underscore, and dash.
@@ -81,7 +98,7 @@ const Schema = z.object({
   GH_TOKEN: optionalTrimmed,
   GH_OWNER: optionalTrimmed,
   // Coolify integration (used by /deploy)
-  COOLIFY_URL: z.string().url().optional(),
+  COOLIFY_URL: optionalUrl,
   COOLIFY_TOKEN: optionalTrimmed,
   COOLIFY_SERVER_UUID: optionalTrimmed,
   COOLIFY_PROJECT_UUID: optionalTrimmed,

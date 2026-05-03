@@ -181,4 +181,27 @@ describe("loadConfig optional integration env vars", () => {
     expect(cfg.ghToken).toBe("ghp_abc");
     expect(cfg.coolifyToken).toBe("ct");
   });
+
+  it("treats empty / whitespace-only env vars as undefined (compose passthrough)", () => {
+    // docker compose's `${VAR:-}` produces "" for unset vars. The schema
+    // must coerce that to undefined so the bridge boots successfully when
+    // optional integrations aren't configured.
+    const cfg = loadConfig({
+      ...minEnv,
+      GH_TOKEN: "",
+      GH_OWNER: "   ",
+      COOLIFY_URL: "",
+      COOLIFY_TOKEN: "  ",
+      COOLIFY_SERVER_UUID: "",
+      COOLIFY_PROJECT_UUID: "",
+      COOLIFY_GITHUB_APP_UUID: "",
+    });
+    expect(cfg.ghToken).toBeUndefined();
+    expect(cfg.ghOwner).toBeUndefined();
+    expect(cfg.coolifyUrl).toBeUndefined();
+    expect(cfg.coolifyToken).toBeUndefined();
+    expect(cfg.coolifyServerUuid).toBeUndefined();
+    expect(cfg.coolifyProjectUuid).toBeUndefined();
+    expect(cfg.coolifyGithubAppUuid).toBeUndefined();
+  });
 });
