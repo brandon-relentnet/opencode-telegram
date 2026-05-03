@@ -78,6 +78,39 @@ export function renderToolLine(part: RenderablePart): string {
   return `${emoji} ${escapedTool} \`${escaped}\``;
 }
 
+const STREAMING_VIEW_CAP = 30;
+const THINKING_MARKER = "_thinking…_";
+
+/**
+ * Render the placeholder content while the agent is working.
+ *
+ * Filters to tool parts only (text parts are hidden during streaming to
+ * avoid partial-MarkdownV2 rendering bugs). Each tool becomes one line via
+ * renderToolLine. If more than STREAMING_VIEW_CAP tools are present, the
+ * oldest are collapsed into a single italic summary line. A trailing
+ * "_thinking…_" line indicates work in progress.
+ *
+ * The output uses only: inline code (single backticks), italic
+ * (underscores), emoji, newlines. NO fenced code blocks. Structurally
+ * cannot produce unbalanced fences.
+ */
+export function renderStreamingView(parts: readonly RenderablePart[]): string {
+  const toolParts = parts.filter((p) => p.type === "tool");
+  const lines: string[] = [];
+  if (toolParts.length > STREAMING_VIEW_CAP) {
+    const collapsed = toolParts.length - STREAMING_VIEW_CAP;
+    lines.push(`_…${collapsed} earlier actions…_`);
+    for (let i = collapsed; i < toolParts.length; i++) {
+      const part = toolParts[i];
+      if (part) lines.push(renderToolLine(part));
+    }
+  } else {
+    for (const part of toolParts) lines.push(renderToolLine(part));
+  }
+  lines.push(THINKING_MARKER);
+  return lines.join("\n");
+}
+
 function summarizeToolInput(toolName: string, input: unknown): string {
   if (input == null || typeof input !== "object") return "";
   const obj = input as Record<string, unknown>;
