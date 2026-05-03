@@ -70,7 +70,14 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       if (typeof p.id === "string") turn.appendPart(p);
     },
     async onIdle() {
-      await turn.finalize();
+      try {
+        await turn.finalize();
+      } catch (err) {
+        deps.log?.error?.(
+          { chatId, sessionId, err: describeError(err) },
+          "turn.finalize threw despite safeEdit/safeSend wrappers",
+        );
+      }
       if (!unregistered) {
         unregistered = true;
         unregister();
@@ -78,7 +85,14 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
     },
     async onError(err) {
       const msg = describeError(err);
-      await turn.showError(msg);
+      try {
+        await turn.showError(msg);
+      } catch (showErr) {
+        deps.log?.error?.(
+          { chatId, sessionId, err: describeError(showErr) },
+          "turn.showError threw",
+        );
+      }
       if (!unregistered) {
         unregistered = true;
         unregister();

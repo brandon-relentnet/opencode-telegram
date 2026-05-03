@@ -63,11 +63,11 @@ export class Turn {
     if (this.finalized) return;
     this.finalized = true;
     this.cancelTimer();
-    await this.bot.editMessageText(
+    await safeEdit(
+      this.bot,
       this.chatId,
       this.placeholderMessageId,
       `❌ ${escapeMarkdownV2(error)}`,
-      { parse_mode: "MarkdownV2" },
     );
   }
 

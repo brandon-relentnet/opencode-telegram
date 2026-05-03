@@ -199,6 +199,55 @@ describe("handleTextMessage", () => {
     expect(permissions.sendRequest).toHaveBeenCalledWith(1, "ses_a", expect.objectContaining({ id: "p1" }));
   });
 
+  it("onIdle does not propagate rejections from turn.finalize (defense in depth)", async () => {
+    // Even though Task 6's safeEdit/safeSend prevent finalize from throwing,
+    // a future change could re-introduce a throw. The onIdle wrapper must
+    // catch any error so the EventRouter's fire-and-forget dispatch doesn't
+    // produce an unhandled rejection (which would crash the process).
+    state.setProject(1, "/workspace/a", "ses_a");
+    const ctx = makeFakeCtx({ chatId: 1, text: "do something" });
+    ctx.reply.mockResolvedValue({ message_id: 555 });
+
+    const router = makeRouter();
+    const client = makeClient();
+
+    // Make every Telegram call throw — this would cause an unwrapped
+    // finalize() to reject if it weren't routed through safeEdit/safeSend.
+    // We further validate the wrapper by ensuring even a hypothetical throw
+    // from finalize() doesn't escape onIdle.
+    const bot = {
+      editMessageText: vi.fn(async () => {
+        throw new Error("telegram down");
+      }),
+      sendMessage: vi.fn(async () => {
+        throw new Error("telegram down");
+      }),
+    };
+
+    const log = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+
+    await handleTextMessage(ctx as never, {
+      state,
+      client,
+      router,
+      bot,
+      permissions: { sendRequest: vi.fn() } as never,
+      defaultModel: DEFAULT_MODEL,
+      log,
+    });
+
+    const handler = router.registered!;
+    // Invoking onIdle must not reject — even if turn.finalize internally
+    // were to throw (which safeEdit prevents, but this is the safety net).
+    await expect(Promise.resolve(handler.onIdle())).resolves.toBeUndefined();
+    // unregister must still have been called (cleanup must run after the catch)
+    expect(router.unregister).toHaveBeenCalled();
+  });
+
   it("returns BEFORE the prompt resolves (no sequential blocking — critical for callback_query processing)", async () => {
     // Regression: an awaited prompt would block grammy's update queue —
     // when opencode pauses for a permission response, the user's button
