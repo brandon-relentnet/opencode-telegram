@@ -153,6 +153,25 @@ describe("buildFirstDeployPrompt", () => {
     expect(prompt).toContain('echo "deployed:$APP_UUID:$FQDN"');
     expect(prompt).toMatch(/failed:/);
   });
+
+  it("captures HTTP status separately so 4xx errors surface clearly", () => {
+    // Without the HTTP-status capture, `curl -sf` would silently fail on 4xx
+    // and the agent would improvise a generic "curl command did not produce
+    // valid JSON" reply. The prompt must echo the full body + status.
+    const prompt = buildFirstDeployPrompt("/workspace/site");
+    expect(prompt).toContain("___STATUS:%{http_code}");
+    expect(prompt).toContain("failed: Coolify HTTP $STATUS");
+  });
+
+  it("parses the FQDN from Coolify's .domains field (not .fqdn)", () => {
+    // Coolify's POST /api/v1/applications/private-github-app returns
+    // {uuid, domains: "https://x.example.com,https://y.example.com"} —
+    // not the {uuid, fqdn} shape the original prompt assumed. The script
+    // must read .domains and strip the scheme.
+    const prompt = buildFirstDeployPrompt("/workspace/site");
+    expect(prompt).toContain(".domains");
+    expect(prompt).not.toContain(".fqdn");
+  });
 });
 
 describe("buildSubsequentDeployPrompt", () => {
