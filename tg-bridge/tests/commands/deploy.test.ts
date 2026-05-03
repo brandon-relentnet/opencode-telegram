@@ -252,6 +252,8 @@ describe("handleDeploy first-deploy path", () => {
     const bot = deps.bot as ReturnType<typeof makeBot>;
     const lastEdit = bot.edits[bot.edits.length - 1];
     expect(String(lastEdit?.[2])).toMatch(/site\\?\.example\\?\.com/);
+    // Dashboard URL must be included so user can navigate to manage the app.
+    expect(String(lastEdit?.[2])).toMatch(/coolify\\?\.example\\?\.com\/applications\/abc\\?-123/);
   });
 });
 

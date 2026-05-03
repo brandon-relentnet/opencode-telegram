@@ -231,27 +231,31 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
               .filter((t) => t.length > 0)
               .at(-1) ?? "";
           const result = parseDeployReply(lastText, isFirst);
+          // Build the Coolify dashboard URL so the user can manage the app.
+          // Coolify's app URL pattern is /project/<P>/environment/production/application/<A>.
+          // We don't know the environment UUID without an extra API call, so use the
+          // /applications/<uuid> shortcut which Coolify resolves correctly.
+          const dashboardUrl = (uuid: string): string =>
+            cfg.url ? `${cfg.url.replace(/\/+$/, "")}/applications/${uuid}` : "";
           if (result?.kind === "first") {
             // Stop streaming view BEFORE we overwrite the placeholder, so a
             // queued setTimeout can't fire afterward and revert.
             await turn.cancel();
             deps.state.setCoolifyApp(chatId, projectPath, result.uuid, result.fqdn);
-            await safeEdit(
-              deps.bot,
-              chatId,
-              placeholderId,
-              escapeMarkdownV2(`✅ Deployed: https://${result.fqdn}`),
-              deps.log,
-            );
+            const dashboard = dashboardUrl(result.uuid);
+            const lines = [
+              `✅ Deployed: https://${result.fqdn}`,
+              ...(dashboard ? [`Coolify dashboard: ${dashboard}`] : []),
+            ].join("\n");
+            await safeEdit(deps.bot, chatId, placeholderId, escapeMarkdownV2(lines), deps.log);
           } else if (result?.kind === "subsequent" && existing) {
             await turn.cancel();
-            await safeEdit(
-              deps.bot,
-              chatId,
-              placeholderId,
-              escapeMarkdownV2(`✅ Redeployed: https://${existing.fqdn}`),
-              deps.log,
-            );
+            const dashboard = dashboardUrl(existing.uuid);
+            const lines = [
+              `✅ Redeployed: https://${existing.fqdn}`,
+              ...(dashboard ? [`Coolify dashboard: ${dashboard}`] : []),
+            ].join("\n");
+            await safeEdit(deps.bot, chatId, placeholderId, escapeMarkdownV2(lines), deps.log);
           } else if (result?.kind === "failed") {
             await turn.showError(result.reason);
           } else {
