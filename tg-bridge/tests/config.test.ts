@@ -125,3 +125,60 @@ describe("parseModelId", () => {
     expect(parseModelId("/foo")).toBeUndefined();
   });
 });
+
+describe("loadConfig optional integration env vars", () => {
+  const minEnv = {
+    TELEGRAM_BOT_TOKEN: "tok",
+    TELEGRAM_ALLOWED_USER_IDS: "1",
+    OPENCODE_PASSWORD: "pw",
+  };
+
+  it("ghToken/ghOwner/coolify* default to undefined when not set", () => {
+    const cfg = loadConfig(minEnv);
+    expect(cfg.ghToken).toBeUndefined();
+    expect(cfg.ghOwner).toBeUndefined();
+    expect(cfg.coolifyUrl).toBeUndefined();
+    expect(cfg.coolifyToken).toBeUndefined();
+    expect(cfg.coolifyServerUuid).toBeUndefined();
+    expect(cfg.coolifyProjectUuid).toBeUndefined();
+    expect(cfg.coolifyGithubAppUuid).toBeUndefined();
+  });
+
+  it("populates ghToken / ghOwner when set", () => {
+    const cfg = loadConfig({ ...minEnv, GH_TOKEN: "ghp_abc", GH_OWNER: "brandon" });
+    expect(cfg.ghToken).toBe("ghp_abc");
+    expect(cfg.ghOwner).toBe("brandon");
+  });
+
+  it("populates all coolify fields when set", () => {
+    const cfg = loadConfig({
+      ...minEnv,
+      COOLIFY_URL: "https://coolify.example.com",
+      COOLIFY_TOKEN: "ct_abc",
+      COOLIFY_SERVER_UUID: "srv-1",
+      COOLIFY_PROJECT_UUID: "prj-1",
+      COOLIFY_GITHUB_APP_UUID: "gha-1",
+    });
+    expect(cfg.coolifyUrl).toBe("https://coolify.example.com");
+    expect(cfg.coolifyToken).toBe("ct_abc");
+    expect(cfg.coolifyServerUuid).toBe("srv-1");
+    expect(cfg.coolifyProjectUuid).toBe("prj-1");
+    expect(cfg.coolifyGithubAppUuid).toBe("gha-1");
+  });
+
+  it("rejects invalid COOLIFY_URL", () => {
+    expect(() =>
+      loadConfig({ ...minEnv, COOLIFY_URL: "not a url" }),
+    ).toThrow(/COOLIFY_URL/);
+  });
+
+  it("trims whitespace on the new scalars", () => {
+    const cfg = loadConfig({
+      ...minEnv,
+      GH_TOKEN: "  ghp_abc  ",
+      COOLIFY_TOKEN: "  ct  ",
+    });
+    expect(cfg.ghToken).toBe("ghp_abc");
+    expect(cfg.coolifyToken).toBe("ct");
+  });
+});

@@ -16,6 +16,12 @@ const trimmedNonEmpty = (msg: string) =>
     .transform((s) => s.trim())
     .pipe(z.string().min(1, msg));
 
+const optionalTrimmed = z
+  .string()
+  .transform((s) => s.trim())
+  .pipe(z.string().min(1))
+  .optional();
+
 // Format: <providerID>/<modelID>, e.g. "anthropic/claude-sonnet-4-5".
 // Identifiers can include alphanumerics, dot, underscore, and dash.
 const MODEL_ID_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
@@ -71,6 +77,15 @@ const Schema = z.object({
   // Without this, opencode picks its own default which may not match the
   // provider account the bridge has authenticated against.
   DEFAULT_MODEL: modelId.default("anthropic/claude-sonnet-4-5"),
+  // GitHub integration (used by /init-remote)
+  GH_TOKEN: optionalTrimmed,
+  GH_OWNER: optionalTrimmed,
+  // Coolify integration (used by /deploy)
+  COOLIFY_URL: z.string().url().optional(),
+  COOLIFY_TOKEN: optionalTrimmed,
+  COOLIFY_SERVER_UUID: optionalTrimmed,
+  COOLIFY_PROJECT_UUID: optionalTrimmed,
+  COOLIFY_GITHUB_APP_UUID: optionalTrimmed,
 });
 
 export interface Config {
@@ -82,6 +97,14 @@ export interface Config {
   workspaceRoot: string;
   logLevel: LogLevel;
   defaultModel: string;
+  // Optional integration fields. Commands gate on presence at invocation time.
+  ghToken: string | undefined;
+  ghOwner: string | undefined;
+  coolifyUrl: string | undefined;
+  coolifyToken: string | undefined;
+  coolifyServerUuid: string | undefined;
+  coolifyProjectUuid: string | undefined;
+  coolifyGithubAppUuid: string | undefined;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -105,6 +128,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     workspaceRoot: parsed.WORKSPACE_ROOT,
     logLevel: parsed.LOG_LEVEL,
     defaultModel: parsed.DEFAULT_MODEL,
+    ghToken: parsed.GH_TOKEN,
+    ghOwner: parsed.GH_OWNER,
+    coolifyUrl: parsed.COOLIFY_URL,
+    coolifyToken: parsed.COOLIFY_TOKEN,
+    coolifyServerUuid: parsed.COOLIFY_SERVER_UUID,
+    coolifyProjectUuid: parsed.COOLIFY_PROJECT_UUID,
+    coolifyGithubAppUuid: parsed.COOLIFY_GITHUB_APP_UUID,
   };
 }
 
