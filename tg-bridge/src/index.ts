@@ -173,7 +173,15 @@ async function main(): Promise<void> {
   process.on("SIGTERM", stop);
 
   log.info({ workspaceRoot: config.workspaceRoot, opencodeUrl: config.opencodeUrl }, "starting");
-  await bot.start({ drop_pending_updates: true });
+  // `allowed_updates` MUST include "callback_query" or Telegram won't send
+  // button-press events. grammy claims to auto-detect from registered
+  // handlers, but in practice the auto-detection didn't fire here (button
+  // presses produced no `callback_query received` log even with the handler
+  // registered). Explicit list, no magic.
+  await bot.start({
+    drop_pending_updates: true,
+    allowed_updates: ["message", "callback_query"],
+  });
 }
 
 main().catch((err) => {
