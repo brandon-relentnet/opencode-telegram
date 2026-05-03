@@ -68,6 +68,8 @@ function makeClientWithStream(stream: AsyncIterable<unknown>): OpencodeClient {
     listProjects: vi.fn(async () => []),
     listProviders: vi.fn(async () => ({ providers: [], default: {} })),
     respondToPermission: vi.fn(async () => true),
+    respondToQuestion: vi.fn(async () => true),
+    rejectQuestion: vi.fn(async () => true),
     subscribeToEvents: vi.fn(() => stream),
   } as OpencodeClient;
 }
@@ -93,6 +95,8 @@ function makeClientWithStreamMap(map: Map<string, AsyncIterable<unknown>>): Open
     listProjects: vi.fn(async () => []),
     listProviders: vi.fn(async () => ({ providers: [], default: {} })),
     respondToPermission: vi.fn(async () => true),
+    respondToQuestion: vi.fn(async () => true),
+    rejectQuestion: vi.fn(async () => true),
     subscribeToEvents: subscribe,
   } as OpencodeClient;
 }

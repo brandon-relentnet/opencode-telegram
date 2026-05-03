@@ -20,6 +20,8 @@ function makeFakeClient(): OpencodeClient {
       default: { anthropic: "claude-sonnet-4-5", openai: "gpt-5" },
     })),
     respondToPermission: vi.fn(async () => true),
+    respondToQuestion: vi.fn(async () => true),
+    rejectQuestion: vi.fn(async () => true),
     subscribeToEvents: vi.fn(() => (async function* () {})()),
   } as OpencodeClient;
 }

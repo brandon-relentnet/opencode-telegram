@@ -102,6 +102,24 @@ export interface BridgeOpencodeClient {
     remember?: boolean,
   ): Promise<boolean>;
   /**
+   * Submit answers for a question request.
+   *
+   * `answers` has one entry per question in the original request, in the
+   * same order. Each entry is the array of selected option labels;
+   * single-select wraps a single label in an array; multi-select includes
+   * all selected; custom-typed answers are appended as raw strings.
+   *
+   * Returns the SDK's success flag (typically true for 2xx).
+   */
+  respondToQuestion(requestId: string, answers: Array<Array<string>>): Promise<boolean>;
+  /**
+   * Reject a pending question request. Used by the bridge when it can no
+   * longer collect answers (e.g. internal timeout, persistent submit
+   * failure). opencode treats this as the question being cancelled; the
+   * agent's `question` tool returns rejected.
+   */
+  rejectQuestion(requestId: string): Promise<boolean>;
+  /**
    * Subscribe to opencode's SSE event stream. The stream is
    * directory-scoped server-side: pass `directory` to receive events for
    * sessions in that worktree. Without a directory, opencode delivers
@@ -200,6 +218,19 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
       return Boolean(data);
     },
 
+    async respondToQuestion(requestId, answers) {
+      // The v1 SDK pinned in this project (@opencode-ai/sdk@1.14.32) has
+      // no question API — `client.question.reply` only exists in v2. To
+      // avoid a SDK migration in Task 2, call the HTTP endpoint directly
+      // through authFetch (same pattern as `subscribeToEvents` for SSE).
+      // The HTTP contract is stable across v1/v2.
+      return await postQuestionEndpoint(opts.baseUrl, authFetch, requestId, "reply", { answers });
+    },
+
+    async rejectQuestion(requestId) {
+      return await postQuestionEndpoint(opts.baseUrl, authFetch, requestId, "reject");
+    },
+
     async *subscribeToEvents(signal, directory) {
       // We deliberately bypass the SDK's `client.event.subscribe()` here.
       //
@@ -218,6 +249,36 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
       yield* sseStream(opts.baseUrl, authFetch, signal, directory);
     },
   };
+}
+
+/**
+ * POST to `/question/{requestID}/{action}` through the authenticated
+ * fetch wrapper. Returns the parsed JSON body coerced to boolean — both
+ * endpoints respond with a literal `true` on success.
+ *
+ * Throws on non-2xx so callers can distinguish "submitted, opencode said
+ * no" (returns false) from "network/HTTP failure" (throws).
+ */
+async function postQuestionEndpoint(
+  baseUrl: string,
+  authFetch: typeof fetch,
+  requestId: string,
+  action: "reply" | "reject",
+  body?: Record<string, unknown>,
+): Promise<boolean> {
+  const url = new URL(`/question/${encodeURIComponent(requestId)}/${action}`, baseUrl);
+  const response = await authFetch(url.toString(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `question.${action} failed: ${response.status} ${response.statusText}`,
+    );
+  }
+  const data: unknown = await response.json().catch(() => null);
+  return Boolean(data);
 }
 
 /**

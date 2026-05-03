@@ -34,6 +34,8 @@ function makeClient(): OpencodeClient {
     listProjects: vi.fn(async () => []),
     listProviders: vi.fn(async () => ({ providers: [], default: {} })),
     respondToPermission: vi.fn(async () => true),
+    respondToQuestion: vi.fn(async () => true),
+    rejectQuestion: vi.fn(async () => true),
     subscribeToEvents: vi.fn(() => (async function* () {})()),
   } as OpencodeClient;
 }

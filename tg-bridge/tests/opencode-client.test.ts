@@ -257,3 +257,99 @@ describe("subscribeToEvents (custom SSE)", () => {
     ]);
   });
 });
+
+/**
+ * The bridge currently imports `@opencode-ai/sdk` v1 (1.14.32), which has
+ * no question API at all (only added in `@opencode-ai/sdk/v2`). To stay
+ * within Task 2's scope (no SDK migration), `respondToQuestion` and
+ * `rejectQuestion` are implemented by calling opencode's HTTP endpoints
+ * directly through the project's existing `authFetch` wrapper, mirroring
+ * the same approach used for SSE in `subscribeToEvents`.
+ *
+ * Tests therefore inject a fake `fetch` (existing project convention) and
+ * assert URL, method, headers, and body. The HTTP contract is stable
+ * across v1 and v2 of the SDK.
+ */
+describe("respondToQuestion", () => {
+  it("POSTs answers to /question/{requestID}/reply with the auth header and JSON body", async () => {
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(true), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as unknown as typeof fetch;
+
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const result = await client.respondToQuestion("qst_abc", [["A", "B"], ["C"]]);
+
+    expect(result).toBe(true);
+    const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const url = new URL(call[0] as string);
+    expect(url.pathname).toBe("/question/qst_abc/reply");
+    const init = (call[1] ?? {}) as RequestInit;
+    expect(init.method).toBe("POST");
+    const headers = new Headers(init.headers);
+    expect(headers.get("Authorization")).toMatch(/^Basic /);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(JSON.parse(init.body as string)).toEqual({
+      answers: [["A", "B"], ["C"]],
+    });
+  });
+
+  it("returns false when opencode responds with falsy data", async () => {
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(false), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as unknown as typeof fetch;
+
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const result = await client.respondToQuestion("qst_x", []);
+    expect(result).toBe(false);
+  });
+});
+
+describe("rejectQuestion", () => {
+  it("POSTs to /question/{requestID}/reject with the auth header", async () => {
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(true), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as unknown as typeof fetch;
+
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const result = await client.rejectQuestion("qst_xyz");
+
+    expect(result).toBe(true);
+    const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const url = new URL(call[0] as string);
+    expect(url.pathname).toBe("/question/qst_xyz/reject");
+    const init = (call[1] ?? {}) as RequestInit;
+    expect(init.method).toBe("POST");
+    const headers = new Headers(init.headers);
+    expect(headers.get("Authorization")).toMatch(/^Basic /);
+  });
+});
