@@ -135,7 +135,18 @@ tg-bridge logging "starting" with no errors.
 6. Send `list the files in this project` — agent will use a tool. You'll see a "thinking…" message that updates as it works.
 7. Send `run the tests` — agent will request bash permission. Tap `✅ Once`. The bash output appears.
 
-If any step fails, check `make logs` and the troubleshooting notes in the design spec.
+If any step fails, check `docker compose logs -f tg-bridge` (or `make logs`)
+and the troubleshooting notes in the design spec.
+
+> **Use the actual Telegram client.** The permission keyboard
+> (`✅ Once / ✓ Always / ❌ Deny`) uses Telegram's `inline_keyboard`
+> feature. Multi-protocol bridges like Beeper and matrix-telegram
+> bridges typically do **not** render inline keyboards — you'll see
+> the permission text but no buttons, leaving you unable to grant
+> access. Use the official Telegram app on iOS/Android/Desktop, or
+> Telegram Web at telegram.org, for any session that needs to grant
+> bash/webfetch permissions. Read-only chats (no permission prompts)
+> work fine in any Telegram-compatible client.
 
 ## Routine maintenance
 
