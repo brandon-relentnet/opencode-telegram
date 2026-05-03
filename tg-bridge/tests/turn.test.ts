@@ -76,6 +76,7 @@ describe("Turn", () => {
     await turn.finalize();
     // The pending timer would have fired at +1000ms; finalize ran immediately.
     expect(bot.calls.edits).toHaveLength(1);
+    // No tools used → final view is just the escaped text.
     expect(bot.calls.edits[0]![2]).toBe("first");
     // No follow-up edits after finalize
     await vi.advanceTimersByTimeAsync(5000);
@@ -106,7 +107,25 @@ describe("Turn", () => {
     const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
     await turn.finalize();
     expect(bot.calls.edits).toHaveLength(1);
-    expect(bot.calls.edits[0]![2]).toMatch(/no response/i);
+    // renderFinalView for empty input returns "_(no response)_" (with parens escaped per MarkdownV2).
+    expect(bot.calls.edits[0]![2]).toBe("_\\(no response\\)_");
+  });
+
+  it("finalize includes a tool summary header when tools were used", async () => {
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
+    turn.appendPart({
+      id: "t1",
+      type: "tool",
+      tool: "bash",
+      state: { status: "completed", input: { command: "pwd" } },
+    });
+    turn.appendPart({ id: "p1", type: "text", text: "Working dir is /workspace." });
+    await turn.finalize();
+    expect(bot.calls.edits).toHaveLength(1);
+    expect(bot.calls.edits[0]![2]).toBe(
+      "_used 1 tool · 1 bash_\n\nWorking dir is /workspace\\.",
+    );
   });
 
   it("showError edits placeholder with the error text and prevents further edits", async () => {
@@ -148,6 +167,17 @@ describe("Turn", () => {
     await vi.advanceTimersByTimeAsync(1000);
     // safeEdit retries with plain text (also throws here), then logs and returns.
     // No unhandled rejection; the test reaches this assertion.
+    expect(bot.editMessageText).toHaveBeenCalled();
+  });
+
+  it("finalize does not crash the process when Telegram rejects the edit", async () => {
+    const bot = makeBot();
+    bot.editMessageText = vi.fn(async () => {
+      throw new Error("can't parse entities");
+    });
+    const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
+    turn.appendPart({ id: "p1", type: "text", text: "anything" });
+    await expect(turn.finalize()).resolves.toBeUndefined();
     expect(bot.editMessageText).toHaveBeenCalled();
   });
 });

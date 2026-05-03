@@ -1,6 +1,6 @@
-import { renderStreamingView, escapeMarkdownV2, type RenderablePart } from "./format.js";
+import { renderStreamingView, renderFinalView, escapeMarkdownV2, type RenderablePart } from "./format.js";
 import { chunkForTelegram } from "./chunker.js";
-import { safeEdit } from "./safe-telegram.js";
+import { safeEdit, safeSend } from "./safe-telegram.js";
 
 export interface TurnBot {
   editMessageText(
@@ -77,23 +77,19 @@ export class Turn {
     this.cancelTimer();
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
 
-    const text = renderStreamingView(this.partsArray() as unknown as readonly RenderablePart[]);
-    if (text.length === 0) {
-      await this.bot.editMessageText(
-        this.chatId,
-        this.placeholderMessageId,
-        escapeMarkdownV2("(no response)"),
-        { parse_mode: "MarkdownV2" },
-      );
-      return;
-    }
-
+    const text = renderFinalView(this.partsArray() as unknown as readonly RenderablePart[]);
     const chunks = chunkForTelegram(text);
-    await this.bot.editMessageText(this.chatId, this.placeholderMessageId, chunks[0]!, {
-      parse_mode: "MarkdownV2",
-    });
+    const first = chunks[0];
+    // renderFinalView always returns at least "_\(no response\)_" so chunks[0] should
+    // always exist; the guard is defensive against future renderer changes.
+    if (!first) return;
+
+    await safeEdit(this.bot, this.chatId, this.placeholderMessageId, first);
+    // safeSend returns null on persistent failure; we deliberately ignore it
+    // and continue with subsequent chunks. Partial delivery is preferred over
+    // no delivery if a single chunk fails to send.
     for (const chunk of chunks.slice(1)) {
-      await this.bot.sendMessage(this.chatId, chunk, { parse_mode: "MarkdownV2" });
+      await safeSend(this.bot, this.chatId, chunk);
     }
   }
 
