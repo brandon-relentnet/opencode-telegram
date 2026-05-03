@@ -9,9 +9,6 @@
 const RESERVED_RE = /[_*[\]()~`>#+\-=|{}.!\\]/g;
 const CODE_RESERVED_RE = /[\\`]/g;
 
-const TOOL_RESULT_LINE_LIMIT = 50;
-const TRUNCATION_NOTICE = "…truncated, full result on opencode web";
-
 export function escapeMarkdownV2(text: string): string {
   return text.replace(RESERVED_RE, (c) => `\\${c}`);
 }
@@ -212,51 +209,4 @@ function summarizeToolInput(toolName: string, input: unknown): string {
   return json.length > 80 ? `${json.slice(0, 80)}…` : json;
 }
 
-function renderTextPart(text: string): string {
-  return escapeMarkdownV2(text);
-}
 
-function renderToolPart(tool: string, state: ToolState): string {
-  const summary = summarizeToolInput(tool, state.input);
-  const escapedTool = escapeMarkdownV2(tool);
-  const escapedSummary = summary ? ` on ${escapeMarkdownV2(summary)}` : "";
-  // Italic via _ ... _; inline code via backticks (which don't need to be escaped
-  // inside the surrounding italic since they delimit a code entity in MarkdownV2).
-  const header = `_called \`${escapedTool}\`${escapedSummary}_`;
-
-  if (state.status === "error") {
-    const errMsg = state.error ?? "tool failed";
-    return `${header}\n❌ ${escapeMarkdownV2(errMsg)}`;
-  }
-
-  const output = state.output ?? "";
-  if (state.status !== "completed" || output.length === 0) {
-    return header;
-  }
-
-  const lines = output.split("\n");
-  const truncated = lines.length > TOOL_RESULT_LINE_LIMIT;
-  const body = truncated
-    ? `${lines.slice(0, TOOL_RESULT_LINE_LIMIT).join("\n")}\n${TRUNCATION_NOTICE}`
-    : output;
-
-  return `${header}\n\`\`\`\n${escapeCode(body)}\n\`\`\``;
-}
-
-export function renderParts(parts: readonly RenderablePart[]): string {
-  const segments: string[] = [];
-  for (const part of parts) {
-    if (part.type === "text" && typeof (part as { text?: string }).text === "string") {
-      segments.push(renderTextPart((part as { text: string }).text));
-    } else if (
-      part.type === "tool" &&
-      typeof (part as { tool?: string }).tool === "string" &&
-      (part as { state?: ToolState }).state
-    ) {
-      const tp = part as { tool: string; state: ToolState };
-      segments.push(renderToolPart(tp.tool, tp.state));
-    }
-    // unknown types: skip
-  }
-  return segments.join("");
-}
