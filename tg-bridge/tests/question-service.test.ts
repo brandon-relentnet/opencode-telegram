@@ -25,23 +25,39 @@ function makeBot(): QuestionBot & {
   };
 }
 
-function makeClient(): OpencodeClient & {
+function makeClient(opts: { sessionDirectory?: string } = {}): OpencodeClient & {
   _replies: Array<{ requestId: string; answers: Array<Array<string>> }>;
   _rejects: Array<string>;
+  _repliesWithDirectory: Array<{ requestId: string; answers: Array<Array<string>>; directory: string | undefined }>;
+  _rejectsWithDirectory: Array<{ requestId: string; directory: string | undefined }>;
 } {
+  // Two parallel arrays: the original `_replies`/`_rejects` shapes preserve
+  // existing assertions (they don't care about directory routing); the
+  // `*WithDirectory` arrays let new tests verify that the bug-fix
+  // forwards `?directory=` correctly to opencode.
   const replies: Array<{ requestId: string; answers: Array<Array<string>> }> = [];
   const rejects: Array<string> = [];
+  const repliesWithDirectory: Array<{ requestId: string; answers: Array<Array<string>>; directory: string | undefined }> = [];
+  const rejectsWithDirectory: Array<{ requestId: string; directory: string | undefined }> = [];
+  const directory = opts.sessionDirectory ?? "/workspace/test-proj";
   return {
     _replies: replies,
     _rejects: rejects,
-    respondToQuestion: vi.fn(async (requestId: string, answers: Array<Array<string>>) => {
-      replies.push({ requestId, answers });
-      return true;
-    }),
-    rejectQuestion: vi.fn(async (requestId: string) => {
+    _repliesWithDirectory: repliesWithDirectory,
+    _rejectsWithDirectory: rejectsWithDirectory,
+    respondToQuestion: vi.fn(
+      async (requestId: string, answers: Array<Array<string>>, dir?: string) => {
+        replies.push({ requestId, answers });
+        repliesWithDirectory.push({ requestId, answers, directory: dir });
+        return true;
+      },
+    ),
+    rejectQuestion: vi.fn(async (requestId: string, dir?: string) => {
       rejects.push(requestId);
+      rejectsWithDirectory.push({ requestId, directory: dir });
       return true;
     }),
+    getSession: vi.fn(async (id: string) => ({ id, directory })),
     // Stubs for unused methods — type-narrowed so TS doesn't complain
     createSession: vi.fn(),
     abortSession: vi.fn(),
@@ -670,5 +686,134 @@ describe("QuestionService — opencode-side cleanup", () => {
       answers: [["A"]],
     });
     expect(service.isAwaitingCustomAnswer(42)).toBe(false);
+  });
+});
+
+/**
+ * Regression coverage for the 2026-05-03 bug: opencode's question registry
+ * is per-instance (keyed by directory). Without `?directory=<session.directory>`
+ * on the reply POST, opencode silently logs `WARN reply for unknown request`
+ * while returning 200/`true`, leaving the agent blocked forever even though
+ * the bridge thinks it succeeded. The fix: look up `session.directory` once
+ * at sendRequest time and forward it on every respond/reject call.
+ */
+describe("QuestionService — directory routing fix", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls getSession on sendRequest and forwards the directory to respondToQuestion", async () => {
+    const bot = makeBot();
+    const client = makeClient({ sessionDirectory: "/workspace/myproj" });
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_dir1",
+      sessionID: "ses_a",
+      questions: [
+        { question: "Pick", header: "h", options: [{ label: "A", description: "a" }] },
+      ],
+    };
+
+    await service.sendRequest(42, req);
+    expect(client.getSession).toHaveBeenCalledWith("ses_a");
+
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_dir1:0:pick:0",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+
+    expect(client._repliesWithDirectory).toHaveLength(1);
+    expect(client._repliesWithDirectory[0]).toEqual({
+      requestId: "qst_dir1",
+      answers: [["A"]],
+      directory: "/workspace/myproj",
+    });
+  });
+
+  it("forwards the directory to rejectQuestion on autoReject", async () => {
+    vi.useFakeTimers();
+    try {
+      const bot = makeBot();
+      const client = makeClient({ sessionDirectory: "/workspace/proj-b" });
+      const service = new QuestionService(bot, client, { timeoutMs: 1000 });
+      const req: QuestionRequest = {
+        id: "qst_dir2",
+        sessionID: "ses_b",
+        questions: [
+          { question: "Pick", header: "h", options: [{ label: "A", description: "a" }] },
+        ],
+      };
+
+      await service.sendRequest(42, req);
+      await vi.advanceTimersByTimeAsync(1001);
+
+      expect(client._rejectsWithDirectory).toHaveLength(1);
+      expect(client._rejectsWithDirectory[0]).toEqual({
+        requestId: "qst_dir2",
+        directory: "/workspace/proj-b",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("forwards the directory to rejectQuestion on respondToQuestion failure recovery", async () => {
+    const bot = makeBot();
+    const client = makeClient({ sessionDirectory: "/workspace/proj-c" });
+    // Override respondToQuestion to throw, exercising the catch path that
+    // also calls rejectQuestion to unblock opencode.
+    (client.respondToQuestion as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("boom"),
+    );
+    const service = new QuestionService(bot, client);
+    const req: QuestionRequest = {
+      id: "qst_dir3",
+      sessionID: "ses_c",
+      questions: [
+        { question: "Pick", header: "h", options: [{ label: "A", description: "a" }] },
+      ],
+    };
+
+    await service.sendRequest(42, req);
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_dir3:0:pick:0",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+
+    expect(client._rejectsWithDirectory).toHaveLength(1);
+    expect(client._rejectsWithDirectory[0]).toEqual({
+      requestId: "qst_dir3",
+      directory: "/workspace/proj-c",
+    });
+  });
+
+  it("falls back to undefined directory when getSession fails (best-effort recovery)", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    (client.getSession as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("no such session"),
+    );
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const service = new QuestionService(bot, client, { log });
+    const req: QuestionRequest = {
+      id: "qst_dir4",
+      sessionID: "ses_missing",
+      questions: [
+        { question: "Pick", header: "h", options: [{ label: "A", description: "a" }] },
+      ],
+    };
+
+    await service.sendRequest(42, req);
+    await service.handleCallback({
+      id: "cb1",
+      data: "qst:qst_dir4:0:pick:0",
+      message: { chat: { id: 42 }, message_id: 1000 },
+    });
+
+    expect(log.warn).toHaveBeenCalled();
+    expect(client._repliesWithDirectory).toHaveLength(1);
+    expect(client._repliesWithDirectory[0]?.directory).toBeUndefined();
   });
 });

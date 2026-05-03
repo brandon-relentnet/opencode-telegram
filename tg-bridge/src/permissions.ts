@@ -77,6 +77,15 @@ export interface PermissionServiceOptions {
 
 interface Pending {
   sessionId: string;
+  /**
+   * The session's worktree directory. opencode's permission registry is
+   * per-instance (keyed by directory); a respond without the matching
+   * `?directory=` query lands in opencode's CWD instance, finds no pending
+   * request, and silently no-ops while still returning 200 (same root cause
+   * as the question.reply bug). Looked up via `client.getSession` at
+   * `sendRequest` time.
+   */
+  sessionDirectory: string | undefined;
   chatId: number;
   messageId: number;
   timer: ReturnType<typeof setTimeout>;
@@ -94,8 +103,21 @@ export class PermissionService {
 
   async sendRequest(chatId: number, sessionId: string, perm: PermissionRequest): Promise<void> {
     const text = renderPermissionPrompt(perm);
+    // Look up the session's worktree directory ONCE up front. opencode's
+    // permission registry is per-instance; without this, our respond POST
+    // hits the wrong instance and silently no-ops while returning 200.
+    let sessionDirectory: string | undefined;
+    try {
+      const s = await this.client.getSession(sessionId);
+      sessionDirectory = s.directory;
+    } catch (err) {
+      this.options.log?.warn(
+        { sessionId, permId: perm.id, err: err instanceof Error ? err.message : String(err) },
+        "getSession failed; permission respond will fall back to opencode CWD and likely miss",
+      );
+    }
     this.options.log?.info(
-      { chatId, sessionId, permId: perm.id, kind: perm.permission ?? perm.type, textLen: text.length },
+      { chatId, sessionId, permId: perm.id, kind: perm.permission ?? perm.type, textLen: text.length, sessionDirectory },
       "sending permission prompt to telegram",
     );
     let sent: { message_id: number };
@@ -130,6 +152,7 @@ export class PermissionService {
 
     this.pending.set(perm.id, {
       sessionId,
+      sessionDirectory,
       chatId,
       messageId: sent.message_id,
       timer,
@@ -190,8 +213,14 @@ export class PermissionService {
         { permId, response, remember, sessionId: entry.sessionId },
         "responding to opencode permission",
       );
-      await this.client.respondToPermission(entry.sessionId, permId, response, remember);
-      this.options.log?.info({ permId }, "permission response delivered to opencode");
+      await this.client.respondToPermission(
+        entry.sessionId,
+        permId,
+        response,
+        remember,
+        entry.sessionDirectory,
+      );
+      this.options.log?.info({ permId, directory: entry.sessionDirectory }, "permission response delivered to opencode");
     } catch (err) {
       this.options.log?.error(
         { permId, err: err instanceof Error ? err.message : String(err) },
@@ -217,7 +246,13 @@ export class PermissionService {
     if (!entry || entry.resolved) return;
     entry.resolved = true;
     try {
-      await this.client.respondToPermission(entry.sessionId, permId, "deny", false);
+      await this.client.respondToPermission(
+        entry.sessionId,
+        permId,
+        "deny",
+        false,
+        entry.sessionDirectory,
+      );
     } finally {
       await this.bot
         .editMessageText(

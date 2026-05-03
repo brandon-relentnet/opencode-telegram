@@ -83,6 +83,16 @@ interface PerQuestionState {
 interface PendingRequest {
   requestId: string;
   sessionId: string;
+  /**
+   * The session's worktree directory. Required by opencode's reply/reject
+   * endpoints to route to the right instance — without it, opencode logs
+   * `WARN reply for unknown request` and silently no-ops while still
+   * returning 200/`true`. Looked up via `client.getSession(sessionID)` at
+   * `sendRequest` time. May be undefined if the lookup failed; in that
+   * case the reply will hit opencode's CWD instance, which is almost
+   * certainly the wrong one.
+   */
+  sessionDirectory: string | undefined;
   chatId: number;
   questions: QuestionInfo[];
   questionStates: PerQuestionState[];
@@ -109,9 +119,15 @@ export class QuestionService {
   }
 
   async sendRequest(chatId: number, req: QuestionRequest): Promise<void> {
+    // Look up the session's worktree directory ONCE up front. opencode's
+    // reply/reject endpoints route by `?directory=` (per-instance pending
+    // map); without the right directory, opencode silently 200s while never
+    // delivering the answer to the agent.
+    const sessionDirectory = await this.lookupSessionDirectory(req.sessionID, req.id);
+
     if (req.questions.length === 0) {
       this.log?.warn?.({ requestId: req.id }, "QuestionRequest with empty questions array; submitting immediately");
-      await this.client.respondToQuestion(req.id, []);
+      await this.client.respondToQuestion(req.id, [], sessionDirectory);
       return;
     }
 
@@ -145,12 +161,29 @@ export class QuestionService {
     this.pending.set(req.id, {
       requestId: req.id,
       sessionId: req.sessionID,
+      sessionDirectory,
       chatId,
       questions: req.questions,
       questionStates,
       timer,
       resolved: false,
     });
+  }
+
+  private async lookupSessionDirectory(
+    sessionId: string,
+    requestId: string,
+  ): Promise<string | undefined> {
+    try {
+      const s = await this.client.getSession(sessionId);
+      return s.directory;
+    } catch (err) {
+      this.log?.warn?.(
+        { sessionId, requestId, err: err instanceof Error ? err.message : String(err) },
+        "getSession failed; reply will fall back to opencode CWD and likely miss",
+      );
+      return undefined;
+    }
   }
 
   async handleCallback(cb: CallbackQuery): Promise<boolean> {
@@ -351,8 +384,8 @@ export class QuestionService {
       ...s.customAnswers,
     ]);
     try {
-      await this.client.respondToQuestion(entry.requestId, answers);
-      this.log?.info?.({ requestId: entry.requestId }, "submitted question answers to opencode");
+      await this.client.respondToQuestion(entry.requestId, answers, entry.sessionDirectory);
+      this.log?.info?.({ requestId: entry.requestId, directory: entry.sessionDirectory }, "submitted question answers to opencode");
     } catch (err) {
       this.log?.error?.({ requestId: entry.requestId, err }, "respondToQuestion failed");
       // Annotate each question's message with a failure note
@@ -374,7 +407,7 @@ export class QuestionService {
       // Unblock opencode so its question tool doesn't hang waiting for an answer
       // we can no longer deliver.
       try {
-        await this.client.rejectQuestion(entry.requestId);
+        await this.client.rejectQuestion(entry.requestId, entry.sessionDirectory);
       } catch (rejectErr) {
         this.log?.warn?.(
           { requestId: entry.requestId, err: rejectErr },
@@ -394,7 +427,7 @@ export class QuestionService {
     if (!entry || entry.resolved) return;
     entry.resolved = true;
     try {
-      await this.client.rejectQuestion(requestId);
+      await this.client.rejectQuestion(requestId, entry.sessionDirectory);
     } catch (err) {
       this.log?.warn?.({ requestId, err }, "rejectQuestion failed during autoReject");
     }

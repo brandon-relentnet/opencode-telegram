@@ -89,17 +89,33 @@ export interface BridgeOpencodeClient {
   listProjects(): Promise<SdkProject[]>;
   listProviders(): Promise<{ providers: unknown[]; default: Record<string, string> }>;
   /**
+   * Fetch session metadata (id + directory). Used by Question / Permission
+   * services to learn the worktree the session was anchored at, so subsequent
+   * reply / reject / respond POSTs can carry the correct `?directory=` query
+   * (see comment on `respondToQuestion` for the routing-by-directory bug).
+   *
+   * The route returns the session regardless of the request's `?directory=`
+   * (sessions are persisted globally), so we can call this from anywhere.
+   */
+  getSession(sessionId: string): Promise<{ id: string; directory: string }>;
+  /**
    * Respond to a permission request.
    *
    * `response` is the bridge-level intent: `"allow"` or `"deny"`. The SDK
    * exposes `"once" | "always" | "reject"`; we map `(allow, remember=true)`
    * to `"always"`, `(allow, !remember)` to `"once"`, and `deny` to `"reject"`.
+   *
+   * `directory` MUST match the session's worktree. opencode's permission
+   * registry is per-instance (keyed by directory); a respond without the
+   * matching `?directory=` lands in opencode's CWD instance, fails to find
+   * the pending request, and silently no-ops while still returning 200.
    */
   respondToPermission(
     sessionId: string,
     permissionId: string,
     response: "allow" | "deny",
     remember?: boolean,
+    directory?: string,
   ): Promise<boolean>;
   /**
    * Submit answers for a question request.
@@ -109,16 +125,30 @@ export interface BridgeOpencodeClient {
    * single-select wraps a single label in an array; multi-select includes
    * all selected; custom-typed answers are appended as raw strings.
    *
+   * `directory` MUST match the session's worktree. opencode's question
+   * registry is per-instance (keyed by directory); without the matching
+   * `?directory=` query, `Question.reply` finds no pending entry, returns
+   * 200/`true` while logging `WARN reply for unknown request`, and the
+   * agent's `question` tool stays blocked indefinitely. The bug is
+   * silent: callers get success but the answer never reaches the model.
+   *
    * Returns the SDK's success flag (typically true for 2xx).
    */
-  respondToQuestion(requestId: string, answers: Array<Array<string>>): Promise<boolean>;
+  respondToQuestion(
+    requestId: string,
+    answers: Array<Array<string>>,
+    directory?: string,
+  ): Promise<boolean>;
   /**
    * Reject a pending question request. Used by the bridge when it can no
    * longer collect answers (e.g. internal timeout, persistent submit
    * failure). opencode treats this as the question being cancelled; the
    * agent's `question` tool returns rejected.
+   *
+   * `directory` MUST match the session's worktree (same caveat as
+   * `respondToQuestion`).
    */
-  rejectQuestion(requestId: string): Promise<boolean>;
+  rejectQuestion(requestId: string, directory?: string): Promise<boolean>;
   /**
    * Subscribe to opencode's SSE event stream. The stream is
    * directory-scoped server-side: pass `directory` to receive events for
@@ -207,28 +237,56 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
       return data;
     },
 
-    async respondToPermission(sessionId, permissionId, response, remember) {
+    async getSession(sessionId) {
+      const { data } = await client.session.get({
+        path: { id: sessionId },
+      });
+      if (!data || typeof data.id !== "string" || typeof data.directory !== "string") {
+        throw new Error("getSession: unexpected response shape");
+      }
+      return { id: data.id, directory: data.directory };
+    },
+
+    async respondToPermission(sessionId, permissionId, response, remember, directory) {
       // Map bridge-level (allow/deny + remember) onto SDK enum.
       const sdkResponse: "once" | "always" | "reject" =
         response === "deny" ? "reject" : remember ? "always" : "once";
       const { data } = await client.postSessionIdPermissionsPermissionId({
         path: { id: sessionId, permissionID: permissionId },
         body: { response: sdkResponse },
+        // Forward the session's directory so opencode routes to the right
+        // instance — see the JSDoc on the interface method for why this is
+        // load-bearing.
+        ...(directory ? { query: { directory } } : {}),
       });
       return Boolean(data);
     },
 
-    async respondToQuestion(requestId, answers) {
+    async respondToQuestion(requestId, answers, directory) {
       // The v1 SDK pinned in this project (@opencode-ai/sdk@1.14.32) has
       // no question API — `client.question.reply` only exists in v2. To
       // avoid a SDK migration in Task 2, call the HTTP endpoint directly
       // through authFetch (same pattern as `subscribeToEvents` for SSE).
       // The HTTP contract is stable across v1/v2.
-      return await postQuestionEndpoint(opts.baseUrl, authFetch, requestId, "reply", { answers });
+      return await postQuestionEndpoint(
+        opts.baseUrl,
+        authFetch,
+        requestId,
+        "reply",
+        { answers },
+        directory,
+      );
     },
 
-    async rejectQuestion(requestId) {
-      return await postQuestionEndpoint(opts.baseUrl, authFetch, requestId, "reject");
+    async rejectQuestion(requestId, directory) {
+      return await postQuestionEndpoint(
+        opts.baseUrl,
+        authFetch,
+        requestId,
+        "reject",
+        undefined,
+        directory,
+      );
     },
 
     async *subscribeToEvents(signal, directory) {
@@ -264,9 +322,14 @@ async function postQuestionEndpoint(
   authFetch: typeof fetch,
   requestId: string,
   action: "reply" | "reject",
-  body?: Record<string, unknown>,
+  body: Record<string, unknown> | undefined,
+  directory: string | undefined,
 ): Promise<boolean> {
   const url = new URL(`/question/${encodeURIComponent(requestId)}/${action}`, baseUrl);
+  // Without ?directory=, opencode's InstanceMiddleware falls back to the
+  // server's CWD (`/workspace` in our container) and finds no pending
+  // question — see JSDoc on `respondToQuestion`.
+  if (directory) url.searchParams.set("directory", directory);
   const response = await authFetch(url.toString(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },

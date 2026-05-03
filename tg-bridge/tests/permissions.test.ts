@@ -36,6 +36,7 @@ function makeClient(): OpencodeClient {
     respondToPermission: vi.fn(async () => true),
     respondToQuestion: vi.fn(async () => true),
     rejectQuestion: vi.fn(async () => true),
+    getSession: vi.fn(async () => ({ id: "ses_x", directory: "/workspace" })),
     subscribeToEvents: vi.fn(() => (async function* () {})()),
   } as OpencodeClient;
 }
@@ -83,7 +84,7 @@ describe("PermissionService", () => {
       data: "perm:perm_x:once",
       message: { chat: { id: 42 }, message_id: 701 },
     });
-    expect(client.respondToPermission).toHaveBeenCalledWith("ses_1", "perm_x", "allow", false);
+    expect(client.respondToPermission).toHaveBeenCalledWith("ses_1", "perm_x", "allow", false, "/workspace");
     expect(bot.calls.answers).toHaveLength(1);
     expect(bot.calls.edits.length).toBeGreaterThan(0);
   });
@@ -104,7 +105,7 @@ describe("PermissionService", () => {
       data: "perm:perm_y:always",
       message: { chat: { id: 42 }, message_id: 702 },
     });
-    expect(client.respondToPermission).toHaveBeenCalledWith("ses_1", "perm_y", "allow", true);
+    expect(client.respondToPermission).toHaveBeenCalledWith("ses_1", "perm_y", "allow", true, "/workspace");
   });
 
   it("handleCallback (deny) calls respondToPermission(deny, false)", async () => {
@@ -123,7 +124,7 @@ describe("PermissionService", () => {
       data: "perm:perm_z:deny",
       message: { chat: { id: 42 }, message_id: 703 },
     });
-    expect(client.respondToPermission).toHaveBeenCalledWith("ses_1", "perm_z", "deny", false);
+    expect(client.respondToPermission).toHaveBeenCalledWith("ses_1", "perm_z", "deny", false, "/workspace");
   });
 
   it("auto-denies after timeout if no button is pressed", async () => {
@@ -138,7 +139,7 @@ describe("PermissionService", () => {
       input: {},
     });
     await vi.advanceTimersByTimeAsync(60_001);
-    expect(client.respondToPermission).toHaveBeenCalledWith("ses_1", "perm_t", "deny", false);
+    expect(client.respondToPermission).toHaveBeenCalledWith("ses_1", "perm_t", "deny", false, "/workspace");
   });
 
   it("ignores callbacks whose data does not match the perm: prefix", async () => {
@@ -205,6 +206,70 @@ describe("PermissionService", () => {
     };
     const buttons = opts.reply_markup.inline_keyboard[0]!.map((b) => b.callback_data);
     expect(buttons).toEqual(["perm:per_real:once", "perm:per_real:always", "perm:per_real:deny"]);
+  });
+
+  /**
+   * Regression coverage for the 2026-05-03 directory-routing bug. opencode's
+   * permission registry is per-instance (keyed by directory). Without
+   * `?directory=<session.directory>` the respond POST silently no-ops.
+   */
+  it("looks up session.directory and forwards it to respondToPermission", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    // Make getSession return a non-default directory so we can verify forwarding.
+    (client.getSession as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      id: "ses_dir",
+      directory: "/workspace/myproj",
+    });
+    const svc = new PermissionService(bot, client, { timeoutMs: 60_000 });
+    await svc.sendRequest(42, "ses_dir", {
+      id: "perm_dir",
+      sessionID: "ses_dir",
+      title: "?",
+      type: "bash",
+      input: {},
+    });
+    expect(client.getSession).toHaveBeenCalledWith("ses_dir");
+    await svc.handleCallback({
+      id: "cb1",
+      data: "perm:perm_dir:once",
+      message: { chat: { id: 42 }, message_id: 700 },
+    });
+    expect(client.respondToPermission).toHaveBeenCalledWith(
+      "ses_dir",
+      "perm_dir",
+      "allow",
+      false,
+      "/workspace/myproj",
+    );
+  });
+
+  it("falls back to undefined directory when getSession fails", async () => {
+    const bot = makeBot();
+    const client = makeClient();
+    (client.getSession as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("no such session"),
+    );
+    const svc = new PermissionService(bot, client, { timeoutMs: 60_000 });
+    await svc.sendRequest(42, "ses_missing", {
+      id: "perm_missing",
+      sessionID: "ses_missing",
+      title: "?",
+      type: "bash",
+      input: {},
+    });
+    await svc.handleCallback({
+      id: "cb1",
+      data: "perm:perm_missing:once",
+      message: { chat: { id: 42 }, message_id: 700 },
+    });
+    expect(client.respondToPermission).toHaveBeenCalledWith(
+      "ses_missing",
+      "perm_missing",
+      "allow",
+      false,
+      undefined,
+    );
   });
 });
 

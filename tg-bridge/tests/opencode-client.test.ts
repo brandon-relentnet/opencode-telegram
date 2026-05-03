@@ -353,3 +353,167 @@ describe("rejectQuestion", () => {
     expect(headers.get("Authorization")).toMatch(/^Basic /);
   });
 });
+
+/**
+ * The question-routing-by-directory bug discovered 2026-05-03:
+ *
+ * opencode 1.14.32 stores pending questions in InstanceState, keyed by the
+ * worktree directory the agent was running in (i.e. the session's `directory`
+ * field). The reply/reject endpoints SILENTLY return 200/`true` with a server-
+ * side `WARN reply for unknown request` log when the requestID isn't in the
+ * queried instance's pending map.
+ *
+ * Without forwarding `?directory=<session.directory>` on the reply POST, every
+ * reply hits opencode's CWD instance (`/workspace`), the agent stays blocked
+ * indefinitely, and the Telegram user sees a wrongly-confirmed answer that
+ * never reaches the model.
+ *
+ * Same root cause applies to the permission API (also instance-scoped).
+ */
+describe("respondToQuestion with directory", () => {
+  it("appends ?directory= query when the directory is provided", async () => {
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(true), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    await client.respondToQuestion("qst_abc", [["A"]], "/workspace/myproj");
+
+    const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const url = new URL(call[0] as string);
+    expect(url.pathname).toBe("/question/qst_abc/reply");
+    expect(url.searchParams.get("directory")).toBe("/workspace/myproj");
+  });
+
+  it("omits the directory query when not provided", async () => {
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(true), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    await client.respondToQuestion("qst_abc", [["A"]]);
+
+    const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const url = new URL(call[0] as string);
+    expect(url.pathname).toBe("/question/qst_abc/reply");
+    expect(url.searchParams.has("directory")).toBe(false);
+  });
+});
+
+describe("rejectQuestion with directory", () => {
+  it("appends ?directory= query when the directory is provided", async () => {
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify(true), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    await client.rejectQuestion("qst_xyz", "/workspace/proj");
+
+    const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const url = new URL(call[0] as string);
+    expect(url.pathname).toBe("/question/qst_xyz/reject");
+    expect(url.searchParams.get("directory")).toBe("/workspace/proj");
+  });
+});
+
+describe("respondToPermission with directory", () => {
+  it("forwards the directory as ?directory= query on the permission POST", async () => {
+    const innerFetch = vi.fn(
+      async (input: unknown) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        // Catch the permission POST; ignore other internal calls (none expected).
+        if (url.includes("/permissions/")) {
+          return new Response(JSON.stringify(true), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    await client.respondToPermission(
+      "ses_1",
+      "perm_1",
+      "allow",
+      false,
+      "/workspace/myproj",
+    );
+
+    const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const sentUrl =
+      typeof call[0] === "string" ? new URL(call[0] as string) : new URL((call[0] as Request).url);
+    expect(sentUrl.pathname).toBe("/session/ses_1/permissions/perm_1");
+    expect(sentUrl.searchParams.get("directory")).toBe("/workspace/myproj");
+  });
+});
+
+describe("getSession", () => {
+  it("GETs /session/{id} and returns id + directory", async () => {
+    const innerFetch = vi.fn(
+      async (input: unknown) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/session/")) {
+          return new Response(
+            JSON.stringify({
+              id: "ses_42",
+              directory: "/workspace/myproj",
+              projectID: "proj_1",
+              title: "smoke",
+              time: { created: 1, updated: 2 },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const result = await client.getSession("ses_42");
+
+    expect(result).toEqual({ id: "ses_42", directory: "/workspace/myproj" });
+    const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const sentUrl =
+      typeof call[0] === "string" ? new URL(call[0] as string) : new URL((call[0] as Request).url);
+    expect(sentUrl.pathname).toBe("/session/ses_42");
+  });
+});
