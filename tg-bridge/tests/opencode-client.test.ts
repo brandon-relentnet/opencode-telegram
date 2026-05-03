@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { buildAuthFetch } from "../src/opencode-client.js";
+import { buildAuthFetch, makeOpencodeClient } from "../src/opencode-client.js";
 
 describe("buildAuthFetch", () => {
   it("adds an Authorization: Basic header with base64-encoded user:pass", async () => {
@@ -80,5 +80,180 @@ describe("buildAuthFetch", () => {
     expect(await sentRequest.text()).toBe(
       JSON.stringify({ parts: [{ type: "text", text: "hi" }] }),
     );
+  });
+});
+
+/**
+ * Build an SSE response body from an array of event objects.
+ * Each event becomes one `data: <json>\n\n` block.
+ */
+function makeSseResponseBody(events: unknown[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      for (const evt of events) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(evt)}\n\n`));
+      }
+      controller.close();
+    },
+  });
+}
+
+describe("subscribeToEvents (custom SSE)", () => {
+  it("uses the authenticated fetch wrapper (Authorization header is set on the SSE GET)", async () => {
+    // Regression: the SDK's bundled SSE module bypasses our custom fetch
+    // and uses bare global fetch — producing 401 on every request and
+    // silently breaking event delivery to the bridge. This test asserts
+    // that our hand-rolled SSE consumer goes through authFetch.
+    const events = [{ type: "server.connected", properties: {} }];
+    const innerFetch = vi.fn(
+      async (_input, _init) =>
+        new Response(makeSseResponseBody(events), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    ) as unknown as typeof fetch;
+
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const ac = new AbortController();
+    const collected: unknown[] = [];
+    for await (const evt of client.subscribeToEvents(ac.signal)) {
+      collected.push(evt);
+    }
+    ac.abort();
+
+    expect(collected).toEqual(events);
+    // Confirm the GET went through our auth wrapper.
+    const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const init = (call[1] ?? {}) as RequestInit;
+    expect(new Headers(init.headers).get("Authorization")).toMatch(/^Basic /);
+    expect(new Headers(init.headers).get("Accept")).toBe("text/event-stream");
+  });
+
+  it("appends ?directory=... to the SSE URL when directory is provided", async () => {
+    const events: unknown[] = [];
+    const innerFetch = vi.fn(
+      async (_input, _init) =>
+        new Response(makeSseResponseBody(events), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    ) as unknown as typeof fetch;
+
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const ac = new AbortController();
+    for await (const _evt of client.subscribeToEvents(ac.signal, "/workspace/myapp")) {
+      // drain
+    }
+    ac.abort();
+
+    const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const url = new URL(call[0] as string);
+    expect(url.pathname).toBe("/event");
+    expect(url.searchParams.get("directory")).toBe("/workspace/myapp");
+  });
+
+  it("yields each parsed JSON event in order", async () => {
+    const events = [
+      { type: "server.connected", properties: {} },
+      {
+        type: "message.part.updated",
+        properties: { part: { sessionID: "s1", id: "p1", type: "text", text: "hello" } },
+      },
+      { type: "session.idle", properties: { sessionID: "s1" } },
+    ];
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(makeSseResponseBody(events), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    ) as unknown as typeof fetch;
+
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const ac = new AbortController();
+    const collected: unknown[] = [];
+    for await (const evt of client.subscribeToEvents(ac.signal)) {
+      collected.push(evt);
+    }
+    ac.abort();
+
+    expect(collected).toEqual(events);
+  });
+
+  it("throws on non-2xx response so the EventRouter can apply backoff", async () => {
+    const innerFetch = vi.fn(
+      async () => new Response("Unauthorized", { status: 401, statusText: "Unauthorized" }),
+    ) as unknown as typeof fetch;
+
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const ac = new AbortController();
+    await expect(async () => {
+      for await (const _ of client.subscribeToEvents(ac.signal)) {
+        // nothing
+      }
+    }).rejects.toThrow(/SSE failed: 401/);
+  });
+
+  it("handles a chunk split across multiple reads (partial event buffering)", async () => {
+    // Build a body that emits the JSON in multiple chunks split mid-event.
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"a"'));
+        controller.enqueue(encoder.encode(',"properties":{}}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"b","properties":{}}\n'));
+        controller.enqueue(encoder.encode("\n"));
+        controller.close();
+      },
+    });
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    ) as unknown as typeof fetch;
+
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const ac = new AbortController();
+    const collected: unknown[] = [];
+    for await (const evt of client.subscribeToEvents(ac.signal)) {
+      collected.push(evt);
+    }
+    expect(collected).toEqual([
+      { type: "a", properties: {} },
+      { type: "b", properties: {} },
+    ]);
   });
 });

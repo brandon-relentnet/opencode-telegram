@@ -201,14 +201,109 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
     },
 
     async *subscribeToEvents(signal, directory) {
-      const sub = await client.event.subscribe({
-        signal,
-        ...(directory ? { query: { directory } } : {}),
-      });
-      for await (const evt of sub.stream) {
-        if (signal.aborted) return;
-        yield evt;
-      }
+      // We deliberately bypass the SDK's `client.event.subscribe()` here.
+      //
+      // The SDK's SSE implementation
+      // (node_modules/@opencode-ai/sdk/dist/gen/core/serverSentEvents.gen.js)
+      // calls the GLOBAL `fetch` directly — it ignores the `fetch` option
+      // we passed to `createOpencodeClient`. As a result, every SSE
+      // subscription request goes out WITHOUT our Basic auth header,
+      // opencode returns 401, the SDK retries with backoff (capped at
+      // 30s), and the bridge never receives a single session event.
+      //
+      // Using our `authFetch` directly + a hand-rolled SSE parser solves
+      // the auth problem and keeps the parser simple (we only consume
+      // `data:` lines as JSON; opencode doesn't use `event:`/`id:`/`retry:`
+      // for the events we care about).
+      yield* sseStream(opts.baseUrl, authFetch, signal, directory);
     },
   };
+}
+
+/**
+ * Authenticated SSE consumer for opencode's `/event` endpoint.
+ *
+ * Why hand-rolled instead of the SDK helper: see comment in
+ * `subscribeToEvents` above — the SDK's SSE module bypasses our
+ * authenticated fetch wrapper, producing 401 on every request.
+ *
+ * Yields the parsed JSON object from each `data:` line. Re-throws on
+ * network/HTTP errors so the caller (EventRouter) can apply its own
+ * reconnect/backoff policy.
+ */
+async function* sseStream(
+  baseUrl: string,
+  authFetch: typeof fetch,
+  signal: AbortSignal,
+  directory: string | undefined,
+): AsyncGenerator<unknown, void, undefined> {
+  const url = new URL("/event", baseUrl);
+  if (directory) url.searchParams.set("directory", directory);
+
+  const response = await authFetch(url.toString(), {
+    method: "GET",
+    headers: { Accept: "text/event-stream" },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`SSE failed: ${response.status} ${response.statusText}`);
+  }
+  if (!response.body) {
+    throw new Error("SSE response had no body");
+  }
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  try {
+    while (true) {
+      if (signal.aborted) return;
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffer += value;
+      // SSE event boundary is a blank line (\n\n). Anything left after
+      // the last \n\n is a partial event for the next iteration.
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() ?? "";
+      for (const chunk of chunks) {
+        const data = parseSseChunk(chunk);
+        if (data !== undefined) yield data;
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // noop — already released or stream cancelled
+    }
+  }
+}
+
+/**
+ * Parse a single SSE chunk (lines separated by \n) and return the parsed
+ * JSON value of its `data:` payload, or `undefined` if the chunk has no
+ * data line / is unparseable.
+ *
+ * Supports multi-line `data:` (concatenated with \n per the SSE spec).
+ * Ignores `event:`, `id:`, `retry:`, and comment lines (`:`-prefixed).
+ */
+function parseSseChunk(chunk: string): unknown {
+  const lines = chunk.split("\n");
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("data:")) {
+      // The space after `data:` is optional per the spec.
+      dataLines.push(line.slice(5).replace(/^ /, ""));
+    }
+    // Ignore other field types — opencode doesn't use them for the
+    // events we consume.
+  }
+  if (dataLines.length === 0) return undefined;
+  const raw = dataLines.join("\n");
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Malformed JSON — drop. opencode's events should always be JSON
+    // but a heartbeat or comment may slip through.
+    return undefined;
+  }
 }
