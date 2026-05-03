@@ -34,21 +34,39 @@ describe("Turn", () => {
     expect(bot.calls.edits).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(1000);
     expect(bot.calls.edits).toHaveLength(1);
-    expect(bot.calls.edits[0]![2]).toBe("hello");
+    // Text parts are hidden during streaming; only the thinking marker shows.
+    expect(bot.calls.edits[0]![2]).toBe("_thinking…_");
   });
 
   it("absorbs rapid updates into a single edit per throttle window", async () => {
     const bot = makeBot();
     const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
-    turn.appendPart({ id: "p1", type: "text", text: "h" });
+    turn.appendPart({
+      id: "t1",
+      type: "tool",
+      tool: "read",
+      state: { status: "running", input: { filePath: "a.py" } },
+    });
     await vi.advanceTimersByTimeAsync(100);
-    turn.appendPart({ id: "p1", type: "text", text: "he" });
+    turn.appendPart({
+      id: "t1",
+      type: "tool",
+      tool: "read",
+      state: { status: "completed", input: { filePath: "a.py" }, output: "ignored" },
+    });
     await vi.advanceTimersByTimeAsync(100);
-    turn.appendPart({ id: "p1", type: "text", text: "hello" });
+    turn.appendPart({
+      id: "t2",
+      type: "tool",
+      tool: "bash",
+      state: { status: "running", input: { command: "pwd" } },
+    });
     await vi.advanceTimersByTimeAsync(800);
-    // After throttle window completes, exactly one edit with latest state
+    // After throttle window completes, exactly one edit reflecting the latest state.
     expect(bot.calls.edits).toHaveLength(1);
-    expect(bot.calls.edits[0]![2]).toBe("hello");
+    expect(bot.calls.edits[0]![2]).toBe(
+      "📄 read `a.py`\n⚡ bash `pwd`\n_thinking…_",
+    );
   });
 
   it("finalize edits placeholder with the final render and clears any pending timer", async () => {
@@ -110,5 +128,26 @@ describe("Turn", () => {
     await vi.advanceTimersByTimeAsync(2000);
     // Only the finalize edit
     expect(bot.calls.edits).toHaveLength(1);
+  });
+
+  it("editNow does not crash the process when Telegram rejects the edit", async () => {
+    const bot = makeBot();
+    // Make every editMessageText call throw.
+    bot.editMessageText = vi.fn(async () => {
+      throw new Error("can't parse entities");
+    });
+    // sendMessage is a no-op for this test (not used by editNow).
+    const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
+    turn.appendPart({
+      id: "t1",
+      type: "tool",
+      tool: "bash",
+      state: { status: "running", input: { command: "pwd" } },
+    });
+    // Advance past the throttle to trigger editNow.
+    await vi.advanceTimersByTimeAsync(1000);
+    // safeEdit retries with plain text (also throws here), then logs and returns.
+    // No unhandled rejection; the test reaches this assertion.
+    expect(bot.editMessageText).toHaveBeenCalled();
   });
 });

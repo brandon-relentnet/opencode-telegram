@@ -1,5 +1,6 @@
-import { renderParts, escapeMarkdownV2, type RenderablePart } from "./format.js";
+import { renderStreamingView, escapeMarkdownV2, type RenderablePart } from "./format.js";
 import { chunkForTelegram } from "./chunker.js";
+import { safeEdit } from "./safe-telegram.js";
 
 export interface TurnBot {
   editMessageText(
@@ -76,7 +77,7 @@ export class Turn {
     this.cancelTimer();
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
 
-    const text = this.renderCurrent();
+    const text = renderStreamingView(this.partsArray() as unknown as readonly RenderablePart[]);
     if (text.length === 0) {
       await this.bot.editMessageText(
         this.chatId,
@@ -117,43 +118,24 @@ export class Turn {
 
   private async editNow(): Promise<void> {
     if (this.finalized) return;
-    const text = this.renderCurrent();
+    const text = renderStreamingView(this.partsArray() as unknown as readonly RenderablePart[]);
     if (text.length === 0) return;
     const [first] = chunkForTelegram(text);
     if (!first) return;
     try {
-      await this.bot.editMessageText(this.chatId, this.placeholderMessageId, first, {
-        parse_mode: "MarkdownV2",
-      });
-    } catch {
-      // Swallow transient edit errors (Telegram 429, "message is not modified", etc.).
-      // Finalize will produce the authoritative state.
+      await safeEdit(this.bot, this.chatId, this.placeholderMessageId, first);
     } finally {
       this.inFlightEdit = null;
     }
   }
 
-  private renderCurrent(): string {
-    const ordered: RenderablePart[] = this.partOrder
-      .map((id) => this.parts.get(id))
-      .filter((p): p is IncomingPart => Boolean(p))
-      .map((p) => {
-        if (p.type === "text" && typeof p.text === "string") {
-          return { type: "text", text: p.text };
-        }
-        if (p.type === "tool" && typeof p.tool === "string" && p.state) {
-          return {
-            type: "tool",
-            tool: p.tool,
-            state: {
-              status: p.state.status as "pending" | "running" | "completed" | "error",
-              input: p.state.input,
-              output: p.state.output,
-            },
-          };
-        }
-        return { type: p.type } as RenderablePart;
-      });
-    return renderParts(ordered);
+  /** Return parts in arrival order as an array (for renderers that need a sequence). */
+  private partsArray(): IncomingPart[] {
+    const result: IncomingPart[] = [];
+    for (const id of this.partOrder) {
+      const p = this.parts.get(id);
+      if (p) result.push(p);
+    }
+    return result;
   }
 }
