@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { renderParts, escapeMarkdownV2, type RenderablePart } from "../src/format.js";
+import {
+  renderParts,
+  escapeMarkdownV2,
+  toolEmoji,
+  renderToolLine,
+  type RenderablePart,
+} from "../src/format.js";
 
 describe("escapeMarkdownV2", () => {
   it("escapes all reserved characters", () => {
@@ -116,5 +122,126 @@ describe("renderParts", () => {
     ] as RenderablePart[];
     const out = renderParts(parts);
     expect(out).toBe("hello");
+  });
+});
+
+describe("toolEmoji", () => {
+  it("returns the file emoji for read/write/edit", () => {
+    expect(toolEmoji("read")).toBe("📄");
+    expect(toolEmoji("write")).toBe("📄");
+    expect(toolEmoji("edit")).toBe("📄");
+  });
+
+  it("returns the search emoji for grep/glob", () => {
+    expect(toolEmoji("grep")).toBe("🔍");
+    expect(toolEmoji("glob")).toBe("🔍");
+  });
+
+  it("returns the bolt emoji for bash", () => {
+    expect(toolEmoji("bash")).toBe("⚡");
+  });
+
+  it("returns the globe emoji for webfetch", () => {
+    expect(toolEmoji("webfetch")).toBe("🌐");
+  });
+
+  it("returns a wrench fallback for unknown tools", () => {
+    expect(toolEmoji("anything-else")).toBe("🔧");
+  });
+});
+
+describe("renderToolLine", () => {
+  it("renders a pending read tool with file path in inline code", () => {
+    expect(
+      renderToolLine({
+        type: "tool",
+        tool: "read",
+        state: { status: "pending", input: { filePath: "src/auth.ts" } },
+      }),
+    ).toBe("📄 read `src/auth.ts`");
+  });
+
+  it("renders a running bash tool with the command in inline code", () => {
+    expect(
+      renderToolLine({
+        type: "tool",
+        tool: "bash",
+        state: { status: "running", input: { command: "pwd" } },
+      }),
+    ).toBe("⚡ bash `pwd`");
+  });
+
+  it("renders a completed grep tool with the pattern", () => {
+    expect(
+      renderToolLine({
+        type: "tool",
+        tool: "grep",
+        state: { status: "completed", input: { pattern: "FastAPI" }, output: "ignored during streaming" },
+      }),
+    ).toBe("🔍 grep `FastAPI`");
+  });
+
+  it("renders an errored tool with a red X prefix instead of the tool emoji", () => {
+    expect(
+      renderToolLine({
+        type: "tool",
+        tool: "bash",
+        state: { status: "error", input: { command: "missing" }, error: "command not found" },
+      }),
+    ).toBe("❌ bash `missing`");
+  });
+
+  it("replaces backticks in tool input arguments to keep the inline code span valid", () => {
+    expect(
+      renderToolLine({
+        type: "tool",
+        tool: "bash",
+        state: { status: "running", input: { command: "echo `date`" } },
+      }),
+    ).toBe("⚡ bash `echo 'date'`");
+  });
+
+  it("falls back to JSON.stringify when no preferred field is present", () => {
+    expect(
+      renderToolLine({
+        type: "tool",
+        tool: "custom",
+        state: { status: "running", input: { foo: 42, bar: true } },
+      }),
+    ).toBe("🔧 custom `{\"foo\":42,\"bar\":true}`");
+  });
+
+  it("renders just the tool name when input is missing", () => {
+    expect(
+      renderToolLine({
+        type: "tool",
+        tool: "custom",
+        state: { status: "running" },
+      }),
+    ).toBe("🔧 custom");
+  });
+
+  it("renders just the tool name when input is an empty object", () => {
+    expect(
+      renderToolLine({
+        type: "tool",
+        tool: "custom",
+        state: { status: "running", input: {} },
+      }),
+    ).toBe("🔧 custom");
+  });
+
+  it("returns empty string for non-tool parts", () => {
+    expect(renderToolLine({ type: "text", text: "hi" })).toBe("");
+  });
+
+  it("escapes backslashes inside the code span (but not other reserved chars)", () => {
+    expect(
+      renderToolLine({
+        type: "tool",
+        tool: "bash",
+        state: { status: "running", input: { command: "echo foo\\bar" } },
+      }),
+    ).toBe("⚡ bash `echo foo\\\\bar`");
   });
 });
