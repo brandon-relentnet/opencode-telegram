@@ -32,11 +32,28 @@ export interface DeployDeps {
 }
 
 /**
+ * Default value for `NIXPACKS_NODE_VERSION` set on every Coolify app the
+ * bridge creates. Pinning this avoids surprises when the agent scaffolds a
+ * project against a Node version Coolify's Nixpacks doesn't yet ship
+ * (e.g. Vite 8 requires Node 22.12+ but Coolify currently bundles 22.11).
+ *
+ * `"22"` matches the Node major version existing successful projects on
+ * the user's Coolify instance run on. Users can override per-app via the
+ * Coolify dashboard, or change the default by editing this constant.
+ */
+export const DEFAULT_NIXPACKS_NODE_VERSION = "22";
+
+/**
  * Build the deterministic prompt for first-time deploy of a project.
  *
- * Pushes pending commits, then POSTs to Coolify to create a private-GitHub-app
- * application (Coolify auto-deploys). Parses the response with `jq` and
- * echoes `deployed:$APP_UUID:$FQDN` for the bridge to parse + persist.
+ * Three-step Coolify flow so build-time env vars are set BEFORE the build:
+ *   1. POST /applications/private-github-app with `instant_deploy: false`
+ *   2. POST /applications/{uuid}/envs to set NIXPACKS_NODE_VERSION
+ *   3. GET  /api/v1/deploy?uuid={uuid} to start the build explicitly
+ *
+ * Pushes pending commits first, then runs the three Coolify calls. Parses
+ * the create response with `jq` and echoes `deployed:$APP_UUID:$FQDN` for
+ * the bridge to parse + persist.
  *
  * Coolify URL/token + the project/server/github-app UUIDs are referenced
  * as shell variables ($COOLIFY_URL, $COOLIFY_TOKEN, etc.) so secrets stay
@@ -54,6 +71,7 @@ export function buildFirstDeployPrompt(projectPath: string): string {
     `git add -A`,
     `git diff --cached --quiet || git commit -m "Updates from Telegram session"`,
     `git push origin main`,
+    `# 1) Create the Coolify app (instant_deploy=false; we set env vars next).`,
     `PAYLOAD=$(cat <<EOF`,
     `{`,
     `  "project_uuid": "$COOLIFY_PROJECT_UUID",`,
@@ -64,7 +82,7 @@ export function buildFirstDeployPrompt(projectPath: string): string {
     `  "git_branch": "main",`,
     `  "build_pack": "nixpacks",`,
     `  "ports_exposes": "3000",`,
-    `  "instant_deploy": true`,
+    `  "instant_deploy": false`,
     `}`,
     `EOF`,
     `)`,
@@ -86,6 +104,25 @@ export function buildFirstDeployPrompt(projectPath: string): string {
     `FQDN=$(echo "$BODY" | jq -r '.domains // empty' | sed 's|^https\\?://||' | cut -d',' -f1)`,
     `if [ -z "$APP_UUID" ] || [ -z "$FQDN" ]; then`,
     `  echo "failed: Coolify response missing uuid or domains: $BODY"`,
+    `  exit 0`,
+    `fi`,
+    `# 2) Set NIXPACKS_NODE_VERSION as a build-time env. Soft-fail: if Coolify`,
+    `#    rejects this we continue with their default Node version.`,
+    `ENV_RESP=$(curl -s -w "\\n___STATUS:%{http_code}" -X POST "$COOLIFY_URL/api/v1/applications/$APP_UUID/envs" \\`,
+    `  -H "Authorization: Bearer $COOLIFY_TOKEN" \\`,
+    `  -H "Content-Type: application/json" \\`,
+    `  -d '{"key": "NIXPACKS_NODE_VERSION", "value": "${DEFAULT_NIXPACKS_NODE_VERSION}", "is_buildtime": true, "is_runtime": false}')`,
+    `ENV_STATUS=$(echo "$ENV_RESP" | sed -n 's/.*___STATUS://p')`,
+    `if [ "$ENV_STATUS" != "200" ] && [ "$ENV_STATUS" != "201" ]; then`,
+    `  echo "warn: env-var set returned HTTP $ENV_STATUS; continuing" >&2`,
+    `fi`,
+    `# 3) Trigger the deploy explicitly (instant_deploy was false above).`,
+    `DEP_RESP=$(curl -s -w "\\n___STATUS:%{http_code}" -X GET "$COOLIFY_URL/api/v1/deploy?uuid=$APP_UUID" \\`,
+    `  -H "Authorization: Bearer $COOLIFY_TOKEN")`,
+    `DEP_STATUS=$(echo "$DEP_RESP" | sed -n 's/.*___STATUS://p')`,
+    `if [ "$DEP_STATUS" != "200" ] && [ "$DEP_STATUS" != "201" ]; then`,
+    `  DEP_BODY=$(echo "$DEP_RESP" | sed '$d' | sed 's/___STATUS:[0-9]*$//')`,
+    `  echo "failed: Coolify deploy trigger HTTP $DEP_STATUS: $DEP_BODY"`,
     `  exit 0`,
     `fi`,
     `echo "deployed:$APP_UUID:$FQDN"`,

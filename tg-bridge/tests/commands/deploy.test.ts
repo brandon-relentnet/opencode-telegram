@@ -154,6 +154,40 @@ describe("buildFirstDeployPrompt", () => {
     expect(prompt).toMatch(/failed:/);
   });
 
+  it("creates the app with instant_deploy=false and triggers the deploy explicitly", () => {
+    // We need build-time env vars set BEFORE the build runs. With
+    // instant_deploy=true the build kicks off immediately and our env var
+    // is too late. The flow is: create with instant_deploy=false → POST
+    // envs → GET /deploy?uuid=… to trigger.
+    const prompt = buildFirstDeployPrompt("/workspace/site");
+    expect(prompt).toContain('"instant_deploy": false');
+    expect(prompt).not.toContain('"instant_deploy": true');
+    expect(prompt).toContain('"$COOLIFY_URL/api/v1/deploy?uuid=$APP_UUID"');
+  });
+
+  it("posts NIXPACKS_NODE_VERSION as a build-time env var after app creation", () => {
+    // Avoids the Vite-8-needs-Node-22.12 surprise for users whose agent
+    // scaffolds a project with `"latest"` deps. Defaults to the major
+    // version Coolify's existing successful apps run on.
+    const prompt = buildFirstDeployPrompt("/workspace/site");
+    expect(prompt).toContain('"$COOLIFY_URL/api/v1/applications/$APP_UUID/envs"');
+    expect(prompt).toContain('"key": "NIXPACKS_NODE_VERSION"');
+    expect(prompt).toContain('"value": "22"');
+    expect(prompt).toContain('"is_buildtime": true');
+    expect(prompt).toContain('"is_runtime": false');
+  });
+
+  it("treats env-var POST failure as a soft warning, not fatal", () => {
+    // Env-var set is a defense-in-depth default; if Coolify rejects it
+    // (e.g. the API contract changes), the build can still succeed against
+    // Coolify's default Node version. So we warn and continue.
+    const prompt = buildFirstDeployPrompt("/workspace/site");
+    expect(prompt).toContain('warn: env-var set returned HTTP $ENV_STATUS');
+    // The deploy trigger that follows IS fatal on failure (the build won't
+    // run otherwise) — assert the explicit failed: marker.
+    expect(prompt).toContain('failed: Coolify deploy trigger HTTP $DEP_STATUS');
+  });
+
   it("captures HTTP status separately so 4xx errors surface clearly", () => {
     // Without the HTTP-status capture, `curl -sf` would silently fail on 4xx
     // and the agent would improvise a generic "curl command did not produce
