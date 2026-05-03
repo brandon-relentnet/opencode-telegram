@@ -180,4 +180,42 @@ describe("Turn", () => {
     await expect(turn.finalize()).resolves.toBeUndefined();
     expect(bot.editMessageText).toHaveBeenCalled();
   });
+
+  it("cancel prevents pending streaming-view timer from firing afterward", async () => {
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
+    turn.appendPart({
+      id: "t1",
+      type: "tool",
+      tool: "bash",
+      state: { status: "running", input: { command: "pwd" } },
+    });
+    // Pending timer is queued (will fire at t=1000). Cancel before it does.
+    await turn.cancel();
+    // Advance past the throttle window — the timer should NOT fire because cancel
+    // cleared it and set finalized=true.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(bot.calls.edits).toHaveLength(0);
+    expect(bot.calls.sends).toHaveLength(0);
+  });
+
+  it("cancel writes nothing (caller is responsible for the final placeholder content)", async () => {
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
+    turn.appendPart({ id: "p1", type: "text", text: "intermediate" });
+    await turn.cancel();
+    // No edit should have been issued by Turn itself.
+    expect(bot.calls.edits).toHaveLength(0);
+    expect(bot.calls.sends).toHaveLength(0);
+  });
+
+  it("cancel is idempotent and no-ops after finalize", async () => {
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await turn.finalize();
+    expect(bot.calls.edits).toHaveLength(1);
+    await turn.cancel(); // already finalized, must early-return
+    expect(bot.calls.edits).toHaveLength(1);
+  });
 });

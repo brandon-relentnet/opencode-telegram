@@ -71,6 +71,21 @@ export class Turn {
     );
   }
 
+  /**
+   * Stop streaming + cancel any pending streaming-view edit, WITHOUT writing
+   * the final view. Use this when an upstream caller (createProject's
+   * performAutoSwitch, /deploy's success branches) is going to overwrite the
+   * placeholder itself with a different message — without `cancel()`, a
+   * queued setTimeout from `scheduleEdit` could fire AFTER that overwrite
+   * and replace the upstream message with the streaming view again.
+   */
+  async cancel(): Promise<void> {
+    if (this.finalized) return;
+    this.finalized = true;
+    this.cancelTimer();
+    if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
+  }
+
   async finalize(): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;

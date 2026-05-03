@@ -221,6 +221,9 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
               .at(-1) ?? "";
           const result = parseDeployReply(lastText, isFirst);
           if (result?.kind === "first") {
+            // Stop streaming view BEFORE we overwrite the placeholder, so a
+            // queued setTimeout can't fire afterward and revert.
+            await turn.cancel();
             deps.state.setCoolifyApp(chatId, projectPath, result.uuid, result.fqdn);
             await safeEdit(
               deps.bot,
@@ -230,6 +233,7 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
               deps.log,
             );
           } else if (result?.kind === "subsequent" && existing) {
+            await turn.cancel();
             await safeEdit(
               deps.bot,
               chatId,

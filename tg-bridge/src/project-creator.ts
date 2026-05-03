@@ -213,6 +213,11 @@ export async function createProject(
     async onIdle() {
       try {
         if (detectSuccess(collectedParts, args.kind)) {
+          // Stop streaming view BEFORE performAutoSwitch overwrites the
+          // placeholder. Without this, a queued setTimeout could fire after
+          // the switch confirmation lands and revert the placeholder back
+          // to "⚡ bash mkdir... / thinking…".
+          await turn.cancel();
           await performAutoSwitch(args, deps);
         } else {
           // Failure path: render the LLM's error response into the placeholder.
