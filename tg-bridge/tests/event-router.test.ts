@@ -312,6 +312,183 @@ describe("EventRouter — dispatch", () => {
     pushable.end();
     await runPromise;
   });
+
+  it("dispatches question.asked to onQuestionAsked", async () => {
+    const pushable = makePushable<unknown>();
+    const client = makeClientWithStream(pushable.iterable());
+    const router = new EventRouter(client);
+    const onQuestionAsked = vi.fn();
+    router.registerSession("ses_1", {
+      onPartUpdated: vi.fn(),
+      onIdle: vi.fn(),
+      onError: vi.fn(),
+      onPermissionUpdated: vi.fn(),
+      onQuestionAsked,
+    });
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
+
+    const questionRequest = {
+      id: "qst_1",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick one",
+          header: "Choice",
+          options: [
+            { label: "A", description: "first" },
+            { label: "B", description: "second" },
+          ],
+        },
+      ],
+    };
+    pushable.push({ type: "question.asked", properties: questionRequest });
+    await tick();
+
+    expect(onQuestionAsked).toHaveBeenCalledTimes(1);
+    expect(onQuestionAsked.mock.calls[0]![0]).toEqual(questionRequest);
+
+    ac.abort();
+    pushable.end();
+    await runPromise;
+  });
+
+  it("dispatches question.replied to onQuestionReplied", async () => {
+    const pushable = makePushable<unknown>();
+    const client = makeClientWithStream(pushable.iterable());
+    const router = new EventRouter(client);
+    const onQuestionReplied = vi.fn();
+    router.registerSession("ses_1", {
+      onPartUpdated: vi.fn(),
+      onIdle: vi.fn(),
+      onError: vi.fn(),
+      onPermissionUpdated: vi.fn(),
+      onQuestionReplied,
+    });
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
+
+    const reply = { sessionID: "ses_1", requestID: "qst_1", answers: [["A"]] };
+    pushable.push({ type: "question.replied", properties: reply });
+    await tick();
+
+    expect(onQuestionReplied).toHaveBeenCalledTimes(1);
+    expect(onQuestionReplied.mock.calls[0]![0]).toEqual(reply);
+
+    ac.abort();
+    pushable.end();
+    await runPromise;
+  });
+
+  it("dispatches question.rejected to onQuestionRejected", async () => {
+    const pushable = makePushable<unknown>();
+    const client = makeClientWithStream(pushable.iterable());
+    const router = new EventRouter(client);
+    const onQuestionRejected = vi.fn();
+    router.registerSession("ses_1", {
+      onPartUpdated: vi.fn(),
+      onIdle: vi.fn(),
+      onError: vi.fn(),
+      onPermissionUpdated: vi.fn(),
+      onQuestionRejected,
+    });
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
+
+    const rejection = { sessionID: "ses_1", requestID: "qst_1" };
+    pushable.push({ type: "question.rejected", properties: rejection });
+    await tick();
+
+    expect(onQuestionRejected).toHaveBeenCalledTimes(1);
+    expect(onQuestionRejected.mock.calls[0]![0]).toEqual(rejection);
+
+    ac.abort();
+    pushable.end();
+    await runPromise;
+  });
+
+  it("does not crash when handler omits optional question methods, and continues dispatching", async () => {
+    const pushable = makePushable<unknown>();
+    const client = makeClientWithStream(pushable.iterable());
+    const router = new EventRouter(client);
+    const onIdle = vi.fn();
+    router.registerSession("ses_1", {
+      onPartUpdated: vi.fn(),
+      onIdle,
+      onError: vi.fn(),
+      onPermissionUpdated: vi.fn(),
+      // intentionally no onQuestionAsked / onQuestionReplied / onQuestionRejected
+    });
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
+
+    const questionRequest = {
+      id: "qst_1",
+      sessionID: "ses_1",
+      questions: [
+        {
+          question: "Pick one",
+          header: "Choice",
+          options: [
+            { label: "A", description: "first" },
+            { label: "B", description: "second" },
+          ],
+        },
+      ],
+    };
+    pushable.push({ type: "question.asked", properties: questionRequest });
+    // Following event must still be delivered — proves the dispatch loop
+    // didn't swallow the iteration on the optional-method no-op.
+    pushable.push({ type: "session.idle", properties: { sessionID: "ses_1" } });
+    await tick();
+
+    expect(onIdle).toHaveBeenCalledOnce();
+
+    ac.abort();
+    pushable.end();
+    await runPromise;
+  });
+
+  it("isolates handler exceptions so dispatch loop continues past a throwing handler", async () => {
+    const pushable = makePushable<unknown>();
+    const client = makeClientWithStream(pushable.iterable());
+    const log = { error: vi.fn() };
+    const router = new EventRouter(client, log);
+    const onQuestionAsked = vi.fn(() => {
+      throw new Error("handler boom");
+    });
+    const onIdle = vi.fn();
+    router.registerSession("ses_1", {
+      onPartUpdated: vi.fn(),
+      onIdle,
+      onError: vi.fn(),
+      onPermissionUpdated: vi.fn(),
+      onQuestionAsked,
+    });
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
+
+    pushable.push({
+      type: "question.asked",
+      properties: { id: "qst_1", sessionID: "ses_1", questions: [] },
+    });
+    // If the throw escaped, the for-await-of in subscriptionLoop would catch
+    // it and break out before processing the next event. Asserting onIdle
+    // fires proves dispatch survived.
+    pushable.push({ type: "session.idle", properties: { sessionID: "ses_1" } });
+    await tick();
+
+    expect(onQuestionAsked).toHaveBeenCalledOnce();
+    expect(onIdle).toHaveBeenCalledOnce();
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "question.asked", sessionId: "ses_1" }),
+      "session event handler threw",
+    );
+
+    ac.abort();
+    pushable.end();
+    await runPromise;
+  });
 });
 
 describe("EventRouter — multi-directory subscriptions", () => {

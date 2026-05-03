@@ -6,6 +6,22 @@ export interface SessionEventHandler {
   onIdle(): void;
   onError(err: unknown): void;
   onPermissionUpdated(perm: unknown): void;
+  /**
+   * Optional: handle a `question.asked` event. The bridge's
+   * QuestionService implements this to render the question as
+   * a Telegram inline-keyboard message. Handlers that don't
+   * support questions (e.g. project-creator's deterministic-shell
+   * sessions) can omit this method.
+   */
+  onQuestionAsked?(properties: unknown): void;
+  /**
+   * Optional: handle `question.replied` (someone answered, possibly
+   * via opencode's auto-default after timeout). QuestionService uses
+   * this to clean up pending Telegram keyboards.
+   */
+  onQuestionReplied?(properties: unknown): void;
+  /** Optional: handle `question.rejected`. Symmetric cleanup hook. */
+  onQuestionRejected?(properties: unknown): void;
 }
 
 interface RawEvent {
@@ -13,7 +29,7 @@ interface RawEvent {
   properties?: Record<string, unknown> & { sessionID?: string };
 }
 
-type EventLogger = Partial<Pick<Logger, "warn" | "info">>;
+type EventLogger = Partial<Pick<Logger, "warn" | "info" | "error">>;
 
 /**
  * EventRouter maintains one SSE subscription PER project directory.
@@ -140,29 +156,49 @@ export class EventRouter {
     const handler = this.handlers.get(sessionId);
     if (!handler) return;
 
-    switch (evt.type) {
-      case "message.part.updated": {
-        const part = (evt.properties as { part?: unknown }).part;
-        if (part) handler.onPartUpdated(part);
-        return;
+    // Isolate handler exceptions so a buggy onPartUpdated/onQuestionAsked/etc.
+    // doesn't escape the for-await-of and trigger a full SSE reconnect via
+    // the catch in `subscriptionLoop`. Mirrors the per-call try/catch pattern
+    // already established in message-handler.ts (commit 6e3724d).
+    try {
+      switch (evt.type) {
+        case "message.part.updated": {
+          const part = (evt.properties as { part?: unknown }).part;
+          if (part) handler.onPartUpdated(part);
+          return;
+        }
+        case "session.idle":
+          handler.onIdle();
+          return;
+        case "session.error": {
+          const error = (evt.properties as { error?: unknown }).error ?? new Error("session error");
+          handler.onError(error);
+          return;
+        }
+        // opencode 1.14.32 publishes `permission.asked` when the agent first
+        // requests a permission (the SDK types still claim `permission.updated`,
+        // but the server emits `.asked`). We accept both for forward compat.
+        case "permission.asked":
+        case "permission.updated":
+          handler.onPermissionUpdated(evt.properties);
+          return;
+        case "question.asked":
+          handler.onQuestionAsked?.(evt.properties);
+          return;
+        case "question.replied":
+          handler.onQuestionReplied?.(evt.properties);
+          return;
+        case "question.rejected":
+          handler.onQuestionRejected?.(evt.properties);
+          return;
+        default:
+          return; // ignore other event types in Phase 1
       }
-      case "session.idle":
-        handler.onIdle();
-        return;
-      case "session.error": {
-        const error = (evt.properties as { error?: unknown }).error ?? new Error("session error");
-        handler.onError(error);
-        return;
-      }
-      // opencode 1.14.32 publishes `permission.asked` when the agent first
-      // requests a permission (the SDK types still claim `permission.updated`,
-      // but the server emits `.asked`). We accept both for forward compat.
-      case "permission.asked":
-      case "permission.updated":
-        handler.onPermissionUpdated(evt.properties);
-        return;
-      default:
-        return; // ignore other event types in Phase 1
+    } catch (err) {
+      this.log?.error?.(
+        { err, eventType: evt.type, sessionId },
+        "session event handler threw",
+      );
     }
   }
 
@@ -181,7 +217,10 @@ export class EventRouter {
       type === "session.idle" ||
       type === "session.error" ||
       type === "permission.asked" ||
-      type === "permission.updated"
+      type === "permission.updated" ||
+      type === "question.asked" ||
+      type === "question.replied" ||
+      type === "question.rejected"
     );
   }
 
