@@ -51,4 +51,34 @@ describe("buildAuthFetch", () => {
     const init = ((inner as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![1] ?? {}) as RequestInit;
     expect(new Headers(init.headers).get("Authorization")).toMatch(/^Basic /);
   });
+
+  it("preserves Content-Type and body when input is a fully-built Request (the SDK case)", async () => {
+    // Regression: Node 22's fetch, when given (request, init={headers}),
+    // REPLACES the request's headers with init.headers — so a naive impl
+    // would drop Content-Type: application/json on requests built by the
+    // SDK and opencode would then reject the body as "expected array,
+    // received undefined at parts".
+    const inner = vi.fn(async () =>
+      new Response("ok", { status: 200 }),
+    ) as unknown as typeof fetch;
+    const wrapped = buildAuthFetch(inner, "u", "p");
+
+    const original = new Request("http://opencode:4096/session/abc/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Custom": "preserved" },
+      body: JSON.stringify({ parts: [{ type: "text", text: "hi" }] }),
+    });
+    await wrapped(original);
+
+    const call = (inner as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    const sentRequest = call[0] as Request;
+    expect(sentRequest).toBeInstanceOf(Request);
+    expect(sentRequest.headers.get("Content-Type")).toBe("application/json");
+    expect(sentRequest.headers.get("X-Custom")).toBe("preserved");
+    expect(sentRequest.headers.get("Authorization")).toMatch(/^Basic /);
+    expect(sentRequest.method).toBe("POST");
+    expect(await sentRequest.text()).toBe(
+      JSON.stringify({ parts: [{ type: "text", text: "hi" }] }),
+    );
+  });
 });

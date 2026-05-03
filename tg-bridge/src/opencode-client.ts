@@ -11,6 +11,16 @@ import type {
  * The returned function has the standard `(input, init?)` shape so it can
  * be consumed by general fetch users; an SDK-shaped adapter (`Request` →
  * `Response`) is built on top of it inside `makeOpencodeClient`.
+ *
+ * Important behaviour with `Request` inputs: when the SDK calls us with a
+ * fully-built `Request`, we MUST preserve the request's existing headers
+ * (notably `Content-Type: application/json`). Naively passing
+ * `{ headers: <only Auth> }` as the second arg replaces the original
+ * headers entirely (verified in Node 22's undici), producing a JSON body
+ * sent without the JSON content-type → opencode can't parse it → it
+ * rejects with `expected array, received undefined at parts`. So when
+ * `input` is already a `Request`, we construct a new `Request` that
+ * merges its existing headers with our Authorization header.
  */
 export function buildAuthFetch(
   inner: typeof fetch,
@@ -20,6 +30,14 @@ export function buildAuthFetch(
   const authHeader =
     "Basic " + Buffer.from(`${username}:${password}`, "utf8").toString("base64");
   return async (input, init) => {
+    if (input instanceof Request) {
+      const headers = new Headers(input.headers);
+      if (!headers.has("Authorization")) headers.set("Authorization", authHeader);
+      // Spreading any caller-supplied init lets URL-targeted callers
+      // continue to work, but realistically the SDK only passes a Request
+      // and no init.
+      return inner(new Request(input, { ...(init ?? {}), headers }));
+    }
     const headers = new Headers(init?.headers);
     if (!headers.has("Authorization")) headers.set("Authorization", authHeader);
     return inner(input, { ...(init ?? {}), headers });
