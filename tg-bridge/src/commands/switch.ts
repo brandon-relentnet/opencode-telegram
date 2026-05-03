@@ -19,12 +19,31 @@ export interface SwitchDeps {
   router: { ensureDirectory(directory: string): boolean };
 }
 
-function isSafeProjectName(name: string): boolean {
+/**
+ * Validate a project-name argument as safe to use as a subdirectory of
+ * the workspace root. Rejects empty, absolute paths, path separators,
+ * and names starting with `.` (which would clash with `.git` etc. and
+ * be hidden from the default `/projects` listing anyway).
+ */
+export function isSafeProjectName(name: string): boolean {
   if (name.length === 0) return false;
   if (isAbsolute(name)) return false;
   if (name.includes("/") || name.includes("\\")) return false;
   if (name.startsWith(".")) return false;
   return true;
+}
+
+/**
+ * Build the standard "switched to <name>" reply used by /switch and (after
+ * auto-switch) by /clone and /init. Returns a MarkdownV2-escaped string
+ * ready to send via ctx.reply or safeEdit.
+ */
+export function buildSwitchConfirmation(name: string, projectPath: string, sessionId: string): string {
+  return [
+    `*${escapeMarkdownV2(`Switched to ${name}`)}*`,
+    escapeMarkdownV2(`Project: ${projectPath}`),
+    escapeMarkdownV2(`Session: ${sessionId}`),
+  ].join("\n");
 }
 
 export async function handleSwitch(ctx: Context, deps: SwitchDeps): Promise<void> {
@@ -65,12 +84,7 @@ export async function handleSwitch(ctx: Context, deps: SwitchDeps): Promise<void
   // subscribed (e.g. another chat is in this project, or we hit boot-seed).
   deps.router.ensureDirectory(projectPath);
 
-  await ctx.reply(
-    [
-      `*${escapeMarkdownV2(`Switched to ${arg}`)}*`,
-      escapeMarkdownV2(`Project: ${projectPath}`),
-      escapeMarkdownV2(`Session: ${session.id}`),
-    ].join("\n"),
-    { parse_mode: "MarkdownV2" },
-  );
+  await ctx.reply(buildSwitchConfirmation(arg, projectPath, session.id), {
+    parse_mode: "MarkdownV2",
+  });
 }

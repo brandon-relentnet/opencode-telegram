@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
 import { ChatStateRepo } from "../../src/chat-state.js";
-import { handleSwitch } from "../../src/commands/switch.js";
+import { handleSwitch, isSafeProjectName, buildSwitchConfirmation } from "../../src/commands/switch.js";
 import { makeFakeCtx } from "../helpers/fake-ctx.js";
 import type { OpencodeClient } from "../../src/opencode-client.js";
 
@@ -108,5 +108,29 @@ describe("handleSwitch", () => {
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/failed to switch.*model not found/i);
     expect(state.get(42)).toBeNull();
     expect(router.ensureDirectory).not.toHaveBeenCalled();
+  });
+});
+
+describe("isSafeProjectName", () => {
+  it("accepts standard project names", () => {
+    expect(isSafeProjectName("my-project")).toBe(true);
+    expect(isSafeProjectName("foo_bar")).toBe(true);
+    expect(isSafeProjectName("a")).toBe(true);
+  });
+
+  it("rejects empty, dot-prefixed, separator-containing, or absolute names", () => {
+    expect(isSafeProjectName("")).toBe(false);
+    expect(isSafeProjectName(".hidden")).toBe(false);
+    expect(isSafeProjectName("foo/bar")).toBe(false);
+    expect(isSafeProjectName("foo\\bar")).toBe(false);
+    expect(isSafeProjectName("/abs/path")).toBe(false);
+  });
+});
+
+describe("buildSwitchConfirmation", () => {
+  it("formats the standard switch reply with escaped fields", () => {
+    expect(buildSwitchConfirmation("my-proj", "/workspace/my-proj", "ses_abc")).toBe(
+      "*Switched to my\\-proj*\nProject: /workspace/my\\-proj\nSession: ses\\_abc",
+    );
   });
 });
