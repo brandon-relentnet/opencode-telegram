@@ -71,7 +71,16 @@ export interface BridgeOpencodeClient {
     options?: { directory?: string },
   ): Promise<{ id: string }>;
   abortSession(sessionId: string): Promise<boolean>;
-  listSessions(): Promise<SdkSession[]>;
+  /**
+   * List sessions, optionally scoped to a project directory.
+   *
+   * When `options.directory` is provided, opencode returns only sessions
+   * anchored to that worktree — same `?directory=` query used elsewhere
+   * for instance routing. Without it, the global session list is returned.
+   * /sessions uses the directory-scoped variant so the buttons map 1:1 to
+   * the user's current project.
+   */
+  listSessions(options?: { directory?: string }): Promise<SdkSession[]>;
   /**
    * Send a prompt. `options.model` selects the model (otherwise opencode
    * picks its default, which may not match the provider account the bridge
@@ -206,8 +215,10 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
       return Boolean(data);
     },
 
-    async listSessions() {
-      const { data } = await client.session.list();
+    async listSessions(options) {
+      const { data } = await client.session.list(
+        options?.directory ? { query: { directory: options.directory } } : {},
+      );
       return data ?? [];
     },
 

@@ -20,6 +20,7 @@ import { handleAbort } from "./commands/abort.js";
 import { handleStatus } from "./commands/status.js";
 import { handleModel } from "./commands/model.js";
 import { handlePin, handleUnpin } from "./commands/pin.js";
+import { handleSessions, handleSessionCallback } from "./commands/sessions.js";
 import { handleTextMessage } from "./message-handler.js";
 import { PinnedStatusManager, type PinnedStatusBot } from "./pinned-status.js";
 
@@ -172,6 +173,7 @@ async function main(): Promise<void> {
   };
   const newDeps = { client, state, router, pinnedStatus };
   const modelDeps = { client, state, pinnedStatus };
+  const sessionsDeps = { client, state, router, pinnedStatus };
 
   bot.command("help", (ctx: Context) => handleHelp(ctx));
   bot.command("projects", (ctx) => handleProjects(ctx, projectsDeps));
@@ -190,6 +192,7 @@ async function main(): Promise<void> {
   bot.command("model", (ctx) => handleModel(ctx, modelDeps));
   bot.command("pin", (ctx) => handlePin(ctx, { pinnedStatus }));
   bot.command("unpin", (ctx) => handleUnpin(ctx, { pinnedStatus }));
+  bot.command("sessions", (ctx) => handleSessions(ctx, sessionsDeps));
 
   // 3) Permission + question button callbacks.
   bot.on("callback_query:data", async (ctx) => {
@@ -232,9 +235,9 @@ async function main(): Promise<void> {
         log.warn({ err }, "answerCallbackQuery for pin: failed");
       }
       const action = data.slice("pin:".length);
-      // pin:sessions is wired in Task 10 when handleSessions lands. Until
-      // then, no-op rather than crash. The other four actions route to
-      // existing slash-command handlers using the already-built deps.
+      // The five pin: actions all re-enter existing slash-command handlers
+      // using the already-built deps so the inline-keyboard path doesn't
+      // duplicate any logic.
       if (action === "switch") {
         await handleProjects(ctx as never, projectsDeps);
         return;
@@ -251,7 +254,18 @@ async function main(): Promise<void> {
         await handleDeploy(ctx as never, deployDeps);
         return;
       }
-      log.info({ action }, "unhandled pin: callback action (pin:sessions arrives in Task 10)");
+      if (action === "sessions") {
+        await handleSessions(ctx as never, sessionsDeps);
+        return;
+      }
+      log.info({ action }, "unhandled pin: callback action");
+      return;
+    }
+    if (data.startsWith("sess:")) {
+      // Tap-to-switch from the /sessions inline keyboard. The handler
+      // answers the callback query itself (clears the spinner) before
+      // mutating chat_state.
+      await handleSessionCallback(ctx as never, sessionsDeps);
       return;
     }
     if (data.startsWith("qst:")) {
