@@ -4,6 +4,7 @@ import { escapeMarkdownV2 } from "./format.js";
 import { Turn, type TurnBot } from "./turn.js";
 import { describeError } from "./errors.js";
 import { parseModelId } from "./config.js";
+import { reactProcessing, reactDone, reactFailed } from "./reactions.js";
 import type { OpencodeClient } from "./opencode-client.js";
 import type { ChatStateRepo } from "./chat-state.js";
 import type { SessionEventHandler } from "./event-router.js";
@@ -53,6 +54,11 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
   if (typeof text !== "string" || text.startsWith("/")) return;
 
   const chatId = ctx.chat!.id;
+  // Capture the user's message id up-front so we can react to it on receipt
+  // and again on completion. Reactions are best-effort UX; the helpers
+  // swallow failures internally so we don't need to await them.
+  const userMessageId = ctx.message!.message_id;
+
   const stateRow = deps.state.get(chatId);
   if (!stateRow?.projectPath || !stateRow.sessionId) {
     await ctx.reply(
@@ -61,6 +67,10 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
     );
     return;
   }
+
+  // 👍 — acknowledge receipt immediately. Done before any heavy work so the
+  // user gets feedback even if opencode is slow to respond.
+  void reactProcessing(deps.bot as never, chatId, userMessageId, deps.log);
 
   const placeholder = await ctx.reply(escapeMarkdownV2("thinking…"), {
     parse_mode: "MarkdownV2",
@@ -101,6 +111,8 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
           "turn.finalize threw despite safeEdit/safeSend wrappers",
         );
       }
+      // ✅ — turn finalized successfully. Replaces the prior 👍.
+      void reactDone(deps.bot as never, chatId, userMessageId, deps.log);
       if (!unregistered) {
         unregistered = true;
         unregister();
@@ -116,6 +128,8 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
           "turn.showError threw",
         );
       }
+      // ❌ — session-level error. Replaces the prior 👍.
+      void reactFailed(deps.bot as never, chatId, userMessageId, deps.log);
       if (!unregistered) {
         unregistered = true;
         unregister();
@@ -200,6 +214,8 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       try {
         await turn.showError(`prompt failed: ${msg}`);
       } finally {
+        // ❌ — network/HTTP error before opencode emitted any events.
+        void reactFailed(deps.bot as never, chatId, userMessageId, deps.log);
         if (!unregistered) {
           unregistered = true;
           unregister();
