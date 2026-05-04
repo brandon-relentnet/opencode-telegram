@@ -4,6 +4,7 @@ import {
   toolEmoji,
   renderToolLine,
   renderStreamingView,
+  formatDuration,
   type RenderablePart,
 } from "../src/format.js";
 
@@ -46,13 +47,16 @@ describe("toolEmoji", () => {
 
 describe("renderToolLine", () => {
   it("renders a pending read tool with file path in inline code", () => {
+    // The `.` in the filename is a MarkdownV2-reserved character; renderToolLine
+    // escapes it inside the code span. Telegram unescapes \X for any X inside
+    // code spans, so this displays as "src/auth.ts" to the user.
     expect(
       renderToolLine({
         type: "tool",
         tool: "read",
         state: { status: "pending", input: { filePath: "src/auth.ts" } },
       }),
-    ).toBe("📄 read `src/auth.ts`");
+    ).toBe("📄 read `src/auth\\.ts`");
   });
 
   it("renders a running bash tool with the command in inline code", () => {
@@ -75,14 +79,14 @@ describe("renderToolLine", () => {
     ).toBe("🔍 grep `FastAPI`");
   });
 
-  it("renders an errored tool with a red X prefix instead of the tool emoji", () => {
+  it("renders an errored tool with a red X prefix and a · failed suffix", () => {
     expect(
       renderToolLine({
         type: "tool",
         tool: "bash",
         state: { status: "error", input: { command: "missing" }, error: "command not found" },
       }),
-    ).toBe("❌ bash `missing`");
+    ).toBe("❌ bash `missing` · failed");
   });
 
   it("replaces backticks in tool input arguments to keep the inline code span valid", () => {
@@ -96,13 +100,15 @@ describe("renderToolLine", () => {
   });
 
   it("falls back to JSON.stringify when no preferred field is present", () => {
+    // The JSON braces are MarkdownV2-reserved; escapeMarkdownV2 escapes them
+    // inside the code span. Telegram strips the backslashes when rendering.
     expect(
       renderToolLine({
         type: "tool",
         tool: "custom",
         state: { status: "running", input: { foo: 42, bar: true } },
       }),
-    ).toBe("🔧 custom `{\"foo\":42,\"bar\":true}`");
+    ).toBe("🔧 custom `\\{\"foo\":42,\"bar\":true\\}`");
   });
 
   it("renders just the tool name when input is missing", () => {
@@ -129,7 +135,7 @@ describe("renderToolLine", () => {
     expect(renderToolLine({ type: "text", text: "hi" })).toBe("");
   });
 
-  it("escapes backslashes inside the code span (but not other reserved chars)", () => {
+  it("escapes backslashes inside the code span", () => {
     expect(
       renderToolLine({
         type: "tool",
@@ -159,7 +165,7 @@ describe("renderStreamingView", () => {
         state: { status: "pending", input: { filePath: "config.py" } },
       },
     ]);
-    expect(out).toBe("📄 read `config.py`\n_thinking…_");
+    expect(out).toBe("📄 read `config\\.py`\n_thinking…_");
   });
 
   it("renders multiple tool lines in order with the thinking marker last", () => {
@@ -181,7 +187,7 @@ describe("renderStreamingView", () => {
       },
     ]);
     expect(out).toBe(
-      "📄 read `a.py`\n⚡ bash `pwd`\n🔍 grep `FastAPI`\n_thinking…_",
+      "📄 read `a\\.py`\n⚡ bash `pwd`\n🔍 grep `FastAPI`\n_thinking…_",
     );
   });
 
@@ -197,10 +203,11 @@ describe("renderStreamingView", () => {
     // 1 collapsed summary + 30 tool lines + 1 thinking = 32 lines total
     expect(lines).toHaveLength(32);
     expect(lines[0]).toBe("_…5 earlier actions…_");
-    // First retained tool line should be file5.py (indices 5..34 retained)
-    expect(lines[1]).toBe("📄 read `file5.py`");
+    // First retained tool line should be file5.py (indices 5..34 retained).
+    // The `.` is escaped inside the code span — see renderToolLine doc.
+    expect(lines[1]).toBe("📄 read `file5\\.py`");
     // Last tool line (line 30) should be file34.py
-    expect(lines[30]).toBe("📄 read `file34.py`");
+    expect(lines[30]).toBe("📄 read `file34\\.py`");
     // Final line is the thinking marker
     expect(lines[31]).toBe("_thinking…_");
   });
@@ -214,7 +221,7 @@ describe("renderStreamingView", () => {
     const out = renderStreamingView(parts);
     const lines = out.split("\n");
     expect(lines).toHaveLength(31); // 30 tools + thinking
-    expect(lines[0]).toBe("📄 read `f0.py`");
+    expect(lines[0]).toBe("📄 read `f0\\.py`");
     expect(lines[30]).toBe("_thinking…_");
   });
 
@@ -226,7 +233,7 @@ describe("renderStreamingView", () => {
         state: { status: "error", input: { command: "bad" }, error: "no such file" },
       },
     ]);
-    expect(out).toBe("❌ bash `bad`\n_thinking…_");
+    expect(out).toBe("❌ bash `bad` · failed\n_thinking…_");
   });
 });
 
@@ -437,5 +444,83 @@ describe("renderFinalView (HTML output)", () => {
         { type: "text", text: "```ts\nconst x = 1;\n```" },
       ]),
     ).toBe('<pre><code class="language-ts">const x = 1;\n</code></pre>');
+  });
+});
+
+describe("renderToolLine richer (C3)", () => {
+  it("appends line count for completed read tool when metadata.lines present", () => {
+    const part = {
+      type: "tool",
+      tool: "read",
+      state: {
+        status: "completed",
+        input: { filePath: "src/index.ts" },
+        metadata: { lines: 124 },
+        time: { start: 1000, end: 1200 },
+      },
+    };
+    expect(renderToolLine(part)).toBe("📄 read `src/index\\.ts` · 124 lines · 0.2s");
+  });
+
+  it("appends match count for completed grep when metadata.matchCount present", () => {
+    const part = {
+      type: "tool",
+      tool: "grep",
+      state: {
+        status: "completed",
+        input: { pattern: "FastAPI" },
+        metadata: { matchCount: 7 },
+        time: { start: 1000, end: 1500 },
+      },
+    };
+    expect(renderToolLine(part)).toBe("🔍 grep `FastAPI` · 7 matches · 0.5s");
+  });
+
+  it("appends only timing when metadata absent", () => {
+    const part = {
+      type: "tool",
+      tool: "bash",
+      state: { status: "completed", input: { command: "pwd" }, time: { start: 1000, end: 1100 } },
+    };
+    expect(renderToolLine(part)).toBe("⚡ bash `pwd` · 0.1s");
+  });
+
+  it("falls back to minimal rendering when neither metadata nor time present", () => {
+    const part = {
+      type: "tool",
+      tool: "read",
+      state: { status: "completed", input: { filePath: "x.ts" } },
+    };
+    expect(renderToolLine(part)).toBe("📄 read `x\\.ts`");
+  });
+
+  it("running state ignores metadata + time", () => {
+    const part = {
+      type: "tool",
+      tool: "read",
+      state: { status: "running", input: { filePath: "x.ts" }, metadata: { lines: 99 } },
+    };
+    expect(renderToolLine(part)).toBe("📄 read `x\\.ts`");
+  });
+
+  it("error state shows · failed instead of timing", () => {
+    const part = {
+      type: "tool",
+      tool: "bash",
+      state: { status: "error", input: { command: "bad" }, time: { start: 1000, end: 1100 } },
+    };
+    expect(renderToolLine(part)).toBe("❌ bash `bad` · failed");
+  });
+
+  it("formats sub-second times as 0.Xs", () => {
+    expect(formatDuration(150)).toBe("0.2s");
+  });
+
+  it("formats over-second times as Xs", () => {
+    expect(formatDuration(1500)).toBe("2s");
+  });
+
+  it("formats over-minute times as MmSs", () => {
+    expect(formatDuration(125_000)).toBe("2m 5s");
   });
 });

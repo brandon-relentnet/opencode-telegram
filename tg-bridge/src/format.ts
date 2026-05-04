@@ -17,14 +17,9 @@
 import { commonmarkToTelegramHtml, escapeHtml } from "./markdown-to-html.js";
 
 const RESERVED_RE = /[_*[\]()~`>#+\-=|{}.!\\]/g;
-const CODE_RESERVED_RE = /[\\`]/g;
 
 export function escapeMarkdownV2(text: string): string {
   return text.replace(RESERVED_RE, (c) => `\\${c}`);
-}
-
-function escapeCode(text: string): string {
-  return text.replace(CODE_RESERVED_RE, (c) => `\\${c}`);
 }
 
 interface ToolState {
@@ -32,6 +27,10 @@ interface ToolState {
   input?: unknown;
   output?: string;
   error?: string;
+  // C3: extra fields opencode attaches when a tool finishes. Both are optional
+  // so older opencode versions (and tests that don't set them) still render.
+  metadata?: Record<string, unknown>;
+  time?: { start?: number; end?: number };
 }
 
 export type RenderablePart =
@@ -88,18 +87,78 @@ export function renderToolLine(part: RenderablePart): string {
   // `tool` and `state` typed — they remain `unknown`. The narrow type asserts
   // the runtime shape we know holds in the "tool" arm.
   const tp = part as { type: "tool"; tool: string; state: ToolState };
-  const isError = tp.state.status === "error";
+  const state = tp.state;
+  const isError = state.status === "error";
+  const isCompleted = state.status === "completed";
   const emoji = isError ? "❌" : toolEmoji(tp.tool);
   // Tool name lives OUTSIDE backticks → escape with the outside-code escaper.
   const escapedTool = escapeMarkdownV2(tp.tool);
-  const summary = summarizeToolInput(tp.tool, tp.state.input);
-  if (!summary) return `${emoji} ${escapedTool}`;
+  const summary = summarizeToolInput(tp.tool, state.input);
+
+  // C3: build the suffix that follows the inline-code argument, e.g.
+  // " · 124 lines · 0.2s" for completed reads, " · failed" for errors.
+  // Running/pending tools contribute no suffix — metadata and timing are
+  // only meaningful once the tool has finished.
+  const suffix: string[] = [];
+  if (isError) {
+    suffix.push("failed");
+  } else if (isCompleted) {
+    const md = state.metadata;
+    if (md) {
+      if (tp.tool === "read" && typeof md.lines === "number") {
+        suffix.push(`${md.lines} lines`);
+      } else if (
+        (tp.tool === "grep" || tp.tool === "glob") &&
+        typeof md.matchCount === "number"
+      ) {
+        suffix.push(`${md.matchCount} ${md.matchCount === 1 ? "match" : "matches"}`);
+      } else if (
+        tp.tool === "bash" &&
+        typeof md.exitCode === "number" &&
+        md.exitCode !== 0
+      ) {
+        suffix.push(`exit ${md.exitCode}`);
+      }
+    }
+    if (
+      typeof state.time?.start === "number" &&
+      typeof state.time?.end === "number"
+    ) {
+      suffix.push(formatDuration(state.time.end - state.time.start));
+    }
+  }
+  const suffixStr = suffix.length > 0 ? ` · ${suffix.join(" · ")}` : "";
+
+  if (!summary) return `${emoji} ${escapedTool}${suffixStr}`;
   // Backticks in the input are replaced with single quotes (inline code spans
-  // can't contain backticks even when escaped). The remaining content goes
-  // through escapeCode, which escapes only \ and ` per MarkdownV2.
+  // can't contain backticks even when escaped). The remaining content is
+  // escaped with escapeMarkdownV2 — Telegram unescapes \X for any X inside
+  // code spans, so over-escaping is safe and lets us share one escaper.
   const safeForCode = summary.replace(/`/g, "'");
-  const escaped = escapeCode(safeForCode);
-  return `${emoji} ${escapedTool} \`${escaped}\``;
+  const escaped = escapeMarkdownV2(safeForCode);
+  return `${emoji} ${escapedTool} \`${escaped}\`${suffixStr}`;
+}
+
+/**
+ * Format a millisecond duration as a compact human-readable string:
+ *   < 1s        → "0.Xs" (one decimal place)
+ *   1s – 59s    → "Ns"   (rounded to the nearest second)
+ *   ≥ 1m       → "Mm Ss"
+ *
+ * Used by renderToolLine to annotate completed tool calls with their
+ * elapsed time.
+ */
+export function formatDuration(ms: number): string {
+  // Sub-second: round to the nearest 100 ms so 150 ms → "0.2s" (the plan's
+  // golden test expects 150 → 0.2, which means half-up rounding rather than
+  // raw toFixed(1) — the latter would give "0.1" because 0.15 is binary
+  // 0.14999…).
+  if (ms < 1000) return `${(Math.round(ms / 100) / 10).toFixed(1)}s`;
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${s}s`;
 }
 
 const STREAMING_VIEW_CAP = 30;

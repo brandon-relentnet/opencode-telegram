@@ -65,7 +65,7 @@ describe("Turn", () => {
     // After throttle window completes, exactly one edit reflecting the latest state.
     expect(bot.calls.edits).toHaveLength(1);
     expect(bot.calls.edits[0]![2]).toBe(
-      "📄 read `a.py`\n⚡ bash `pwd`\n_thinking…_",
+      "📄 read `a\\.py`\n⚡ bash `pwd`\n_thinking…_",
     );
   });
 
