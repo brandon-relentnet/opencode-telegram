@@ -19,11 +19,14 @@ interface Row {
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS chat_state (
-    chat_id      INTEGER PRIMARY KEY,
-    project_path TEXT,
-    session_id   TEXT,
-    model        TEXT,
-    updated_at   INTEGER NOT NULL
+    chat_id              INTEGER PRIMARY KEY,
+    project_path         TEXT,
+    session_id           TEXT,
+    model                TEXT,
+    pinned_message_id    INTEGER,
+    pin_paused           INTEGER NOT NULL DEFAULT 0,
+    last_user_message_id INTEGER,
+    updated_at           INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS coolify_app (
     chat_id      INTEGER NOT NULL,
@@ -34,6 +37,29 @@ const SCHEMA = `
     PRIMARY KEY (chat_id, project_path)
   );
 `;
+
+/**
+ * Idempotent ALTER TABLE migration so DBs that pre-date the pinned-status
+ * columns get them added on next boot. Each ALTER is guarded by a
+ * PRAGMA table_info check so re-running this is a no-op.
+ */
+function migrateSchema(db: Database.Database): void {
+  const cols = db
+    .prepare("PRAGMA table_info(chat_state)")
+    .all() as Array<{ name: string }>;
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has("pinned_message_id")) {
+    db.exec("ALTER TABLE chat_state ADD COLUMN pinned_message_id INTEGER");
+  }
+  if (!colNames.has("pin_paused")) {
+    db.exec(
+      "ALTER TABLE chat_state ADD COLUMN pin_paused INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!colNames.has("last_user_message_id")) {
+    db.exec("ALTER TABLE chat_state ADD COLUMN last_user_message_id INTEGER");
+  }
+}
 
 function rowToState(row: Row): ChatState {
   return {
@@ -55,9 +81,17 @@ export class ChatStateRepo {
   private getCoolifyAppStmt: Database.Statement<[number, string]>;
   private upsertCoolifyAppStmt: Database.Statement;
   private deleteCoolifyAppStmt: Database.Statement<[number, string]>;
+  private getPinnedStmt: Database.Statement<[number]>;
+  private setPinnedStmt: Database.Statement;
+  private getPausedStmt: Database.Statement<[number]>;
+  private setPausedStmt: Database.Statement;
+  private getLastUserStmt: Database.Statement<[number]>;
+  private setLastUserStmt: Database.Statement;
+  private ensureRowStmt: Database.Statement;
 
   constructor(private db: Database.Database) {
     db.exec(SCHEMA);
+    migrateSchema(db);
     this.getStmt = db.prepare("SELECT * FROM chat_state WHERE chat_id = ?");
     this.distinctPathsStmt = db.prepare(
       "SELECT DISTINCT project_path FROM chat_state WHERE project_path IS NOT NULL ORDER BY project_path",
@@ -99,6 +133,27 @@ export class ChatStateRepo {
         fqdn       = excluded.fqdn,
         updated_at = excluded.updated_at
     `);
+    this.getPinnedStmt = db.prepare(
+      "SELECT pinned_message_id FROM chat_state WHERE chat_id = ?",
+    );
+    this.setPinnedStmt = db.prepare(
+      "UPDATE chat_state SET pinned_message_id = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.getPausedStmt = db.prepare(
+      "SELECT pin_paused FROM chat_state WHERE chat_id = ?",
+    );
+    this.setPausedStmt = db.prepare(
+      "UPDATE chat_state SET pin_paused = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.getLastUserStmt = db.prepare(
+      "SELECT last_user_message_id FROM chat_state WHERE chat_id = ?",
+    );
+    this.setLastUserStmt = db.prepare(
+      "UPDATE chat_state SET last_user_message_id = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.ensureRowStmt = db.prepare(
+      "INSERT OR IGNORE INTO chat_state (chat_id, updated_at) VALUES (?, ?)",
+    );
   }
 
   get(chatId: number): ChatState | null {
@@ -167,6 +222,66 @@ export class ChatStateRepo {
    */
   clearCoolifyApp(chatId: number, projectPath: string): void {
     this.deleteCoolifyAppStmt.run(chatId, projectPath);
+  }
+
+  /**
+   * Telegram message_id of the bot's pinned status message for this chat,
+   * or null if none exists yet.
+   */
+  getPinnedMessageId(chatId: number): number | null {
+    const row = this.getPinnedStmt.get(chatId) as
+      | { pinned_message_id: number | null }
+      | undefined;
+    return row?.pinned_message_id ?? null;
+  }
+
+  /**
+   * Persist the message_id of the pinned status message. Pass null to
+   * clear it (e.g. after the message has been deleted).
+   */
+  setPinnedMessageId(chatId: number, messageId: number | null): void {
+    this.ensureRow(chatId);
+    this.setPinnedStmt.run(messageId, Date.now(), chatId);
+  }
+
+  /**
+   * Whether automatic pin updates are paused for this chat (e.g. after
+   * /unpin or after a sendMessage/pin failure).
+   */
+  getPinPaused(chatId: number): boolean {
+    const row = this.getPausedStmt.get(chatId) as
+      | { pin_paused: number }
+      | undefined;
+    return Boolean(row?.pin_paused);
+  }
+
+  setPinPaused(chatId: number, paused: boolean): void {
+    this.ensureRow(chatId);
+    this.setPausedStmt.run(paused ? 1 : 0, Date.now(), chatId);
+  }
+
+  /**
+   * Telegram message_id of the most recent user-sent message for this chat,
+   * used to scope reactions and follow-up edits.
+   */
+  getLastUserMessageId(chatId: number): number | null {
+    const row = this.getLastUserStmt.get(chatId) as
+      | { last_user_message_id: number | null }
+      | undefined;
+    return row?.last_user_message_id ?? null;
+  }
+
+  setLastUserMessageId(chatId: number, messageId: number): void {
+    this.ensureRow(chatId);
+    this.setLastUserStmt.run(messageId, Date.now(), chatId);
+  }
+
+  /**
+   * Insert an empty row for chatId if none exists, so subsequent UPDATE
+   * statements have a row to hit. Idempotent via INSERT OR IGNORE.
+   */
+  private ensureRow(chatId: number): void {
+    this.ensureRowStmt.run(chatId, Date.now());
   }
 }
 

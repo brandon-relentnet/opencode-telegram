@@ -151,3 +151,58 @@ describe("ChatStateRepo coolify_app", () => {
     expect(names.has("fqdn")).toBe(true);
   });
 });
+
+describe("ChatStateRepo pinned-status fields", () => {
+  it("setPinnedMessageId + getPinnedMessageId roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    expect(repo.getPinnedMessageId(1)).toBeNull();
+    repo.setPinnedMessageId(1, 1234);
+    expect(repo.getPinnedMessageId(1)).toBe(1234);
+  });
+
+  it("setPinPaused + getPinPaused roundtrip (default false)", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    expect(repo.getPinPaused(1)).toBe(false);
+    repo.setPinPaused(1, true);
+    expect(repo.getPinPaused(1)).toBe(true);
+    repo.setPinPaused(1, false);
+    expect(repo.getPinPaused(1)).toBe(false);
+  });
+
+  it("setLastUserMessageId + getLastUserMessageId roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    expect(repo.getLastUserMessageId(1)).toBeNull();
+    repo.setLastUserMessageId(1, 999);
+    expect(repo.getLastUserMessageId(1)).toBe(999);
+  });
+
+  it("creates the new columns on construction (idempotent)", () => {
+    const db = new Database(":memory:");
+    new ChatStateRepo(db);
+    new ChatStateRepo(db);
+    const cols = db.prepare("PRAGMA table_info(chat_state)").all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    expect(names.has("pinned_message_id")).toBe(true);
+    expect(names.has("pin_paused")).toBe(true);
+    expect(names.has("last_user_message_id")).toBe(true);
+  });
+
+  it("migrates existing rows: NULL pinned_message_id, FALSE pin_paused", () => {
+    const db = new Database(":memory:");
+    // Set up an OLD-style schema row first
+    db.exec(
+      `CREATE TABLE chat_state (chat_id INTEGER PRIMARY KEY, project_path TEXT, session_id TEXT, model TEXT, updated_at INTEGER NOT NULL);`,
+    );
+    db.prepare(
+      "INSERT INTO chat_state (chat_id, project_path, session_id, updated_at) VALUES (?, ?, ?, ?)",
+    ).run(1, "/x", "ses_y", Date.now());
+    // Construct repo — should ALTER TABLE add new columns
+    const repo = new ChatStateRepo(db);
+    expect(repo.getPinnedMessageId(1)).toBeNull();
+    expect(repo.getPinPaused(1)).toBe(false);
+    expect(repo.getLastUserMessageId(1)).toBeNull();
+  });
+});
