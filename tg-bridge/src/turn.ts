@@ -85,6 +85,12 @@ export class Turn {
   // Cancel button entirely (test harnesses, /clone-style flows that own
   // the placeholder lifecycle themselves).
   private readonly cancelSessionId: string | undefined;
+  /**
+   * Latest session.status retry payload, or null when the agent is in idle
+   * or busy state. Set by setSessionStatus(); consumed by editNow() to
+   * render the rate-limit banner instead of the normal thinking line.
+   */
+  private retryStatus: { attempt: number; message: string; next: number } | null = null;
 
   constructor(
     private bot: TurnBot,
@@ -107,6 +113,48 @@ export class Turn {
     this.scheduleEdit();
     this.resetWatchdog();
     this.ensureHeartbeat();
+  }
+
+  /**
+   * Update the agent's session status. opencode emits `session.status`
+   * with `type: "retry" | "idle" | "busy"`. The retry shape (attempt,
+   * message, next) tells us the provider returned a retryable error
+   * (typically 429 rate limit). The bridge:
+   *
+   *   - Renders "⏳ <message> · attempt N · retry in Ns" in the streaming
+   *     view (replacing the thinking placeholder)
+   *   - Resets the idle watchdog so it doesn't fire during a long backoff
+   *     (some retries are 60+ seconds out)
+   *   - Pushes a fresh edit immediately so the user sees the banner
+   *     without waiting for the next throttle window
+   *
+   * `idle` and `busy` clear the retry state.
+   */
+  setSessionStatus(status: unknown): void {
+    if (this.finalized) return;
+    const s = status as { type?: string; attempt?: number; message?: string; next?: number };
+    if (s.type === "retry" && typeof s.attempt === "number" && typeof s.next === "number") {
+      this.retryStatus = {
+        attempt: s.attempt,
+        message: typeof s.message === "string" ? s.message : "Provider returned a retryable error",
+        next: s.next,
+      };
+      this.resetWatchdog();
+      // Push a fresh edit immediately — the user shouldn't wait for the
+      // throttle window to learn we're rate-limited.
+      this.cancelTimer();
+      this.lastEditAt = Date.now();
+      this.inFlightEdit = this.editNow();
+    } else if (s.type === "idle" || s.type === "busy") {
+      const wasRetrying = this.retryStatus != null;
+      this.retryStatus = null;
+      if (wasRetrying) {
+        // Clear the banner promptly when the retry resolves.
+        this.cancelTimer();
+        this.lastEditAt = Date.now();
+        this.inFlightEdit = this.editNow();
+      }
+    }
   }
 
   async showError(error: string): Promise<void> {
@@ -261,9 +309,18 @@ export class Turn {
 
   private async editNow(elapsedSeconds?: number): Promise<void> {
     if (this.finalized) return;
+    // Retry status takes priority over elapsed-seconds heartbeat. When the
+    // agent is rate-limited, the user wants to see "⏳ retrying in Ns",
+    // not a generic thinking counter.
+    const streamOptions: { retryStatus?: { attempt: number; message: string; next: number }; elapsedSeconds?: number } =
+      this.retryStatus != null
+        ? { retryStatus: this.retryStatus }
+        : elapsedSeconds != null
+          ? { elapsedSeconds }
+          : {};
     const text = renderStreamingView(
       this.partsArray() as unknown as readonly RenderablePart[],
-      elapsedSeconds != null ? { elapsedSeconds } : {},
+      streamOptions,
     );
     if (text.length === 0) return;
     const [first] = chunkForTelegram(text);

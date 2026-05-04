@@ -205,6 +205,26 @@ export interface StreamingViewOptions {
    * to signal liveness while the agent works.
    */
   elapsedSeconds?: number;
+  /**
+   * If provided, replaces the thinking placeholder entirely with a
+   * rate-limit notice: "⏳ <message> · attempt N · retry in Ns_".
+   *
+   * opencode emits this via `session.status` with `type: "retry"` when
+   * the provider returns a retryable error (typically 429). `next` is a
+   * unix-ms timestamp of when the retry will be attempted; the bridge
+   * computes "retry in Ns" relative to `now`.
+   *
+   * When set, hides the thinking + elapsed line so the user sees the
+   * rate-limit reason explicitly instead of the generic "thinking" state.
+   */
+  retryStatus?: {
+    attempt: number;
+    message: string;
+    /** Unix milliseconds until next retry. */
+    next: number;
+    /** Override Date.now() for tests. */
+    now?: number;
+  };
 }
 
 /**
@@ -237,12 +257,32 @@ export function renderStreamingView(
   } else {
     for (const part of toolParts) lines.push(renderToolLine(part));
   }
-  const thinking =
-    options.elapsedSeconds != null
-      ? `_thinking · ${formatDurationFromSeconds(options.elapsedSeconds)} elapsed_`
-      : THINKING_MARKER;
-  lines.push(thinking);
+  const tail = renderTailLine(options);
+  lines.push(tail);
   return lines.join("\n");
+}
+
+/**
+ * Build the bottom line of the streaming view. Priority:
+ *   1. retryStatus → rate-limit banner
+ *   2. elapsedSeconds → heartbeat-elapsed line
+ *   3. static "_thinking…_"
+ */
+function renderTailLine(options: StreamingViewOptions): string {
+  if (options.retryStatus) {
+    const { attempt, message, next } = options.retryStatus;
+    const now = options.retryStatus.now ?? Date.now();
+    const remainingSec = Math.max(0, Math.round((next - now) / 1000));
+    const truncated = message.length > 80 ? `${message.slice(0, 77)}…` : message;
+    const escapedMsg = escapeMarkdownV2(truncated);
+    const remainingLabel =
+      remainingSec === 0 ? "retrying now" : `retry in ${formatDurationFromSeconds(remainingSec)}`;
+    return `_⏳ ${escapedMsg} · attempt ${attempt} · ${remainingLabel}_`;
+  }
+  if (options.elapsedSeconds != null) {
+    return `_thinking · ${formatDurationFromSeconds(options.elapsedSeconds)} elapsed_`;
+  }
+  return THINKING_MARKER;
 }
 
 /**

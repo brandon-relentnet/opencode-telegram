@@ -268,6 +268,10 @@ export async function createProject(
       else collectedParts.push(p);
       turn.appendPart(p);
     },
+    onSessionStatus(properties) {
+      const status = (properties as { status?: unknown }).status;
+      if (status) turn.setSessionStatus(status);
+    },
     async onIdle() {
       try {
         if (detectSuccess(collectedParts, args.kind)) {

@@ -29,6 +29,14 @@ export interface SessionEventHandler {
    * user's echoed prompt out of the assistant's final view.
    */
   onMessageCreated?(properties: unknown): void;
+  /**
+   * Optional: handle `session.status` events. opencode emits these when the
+   * session transitions between busy/idle/retry states. The retry shape
+   * carries `attempt`, `message`, and `next` (timestamp) so the bridge can
+   * surface "rate-limited, retrying at HH:MM" to the user instead of the
+   * normal thinking placeholder.
+   */
+  onSessionStatus?(properties: unknown): void;
 }
 
 interface RawEvent {
@@ -201,6 +209,9 @@ export class EventRouter {
         case "message.created":
           handler.onMessageCreated?.(evt.properties);
           return;
+        case "session.status":
+          handler.onSessionStatus?.(evt.properties);
+          return;
         default:
           return; // ignore other event types in Phase 1
       }
@@ -236,7 +247,8 @@ export class EventRouter {
       type === "permission.updated" ||
       type === "question.asked" ||
       type === "question.replied" ||
-      type === "question.rejected"
+      type === "question.rejected" ||
+      type === "session.status"
     );
   }
 

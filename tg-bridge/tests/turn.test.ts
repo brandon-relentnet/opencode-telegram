@@ -388,3 +388,91 @@ describe("Turn cancel button (C2)", () => {
     vi.useRealTimers();
   });
 });
+
+describe("Turn session status (rate-limit retry banner)", () => {
+  it("setSessionStatus with type='retry' renders the rate-limit banner", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000_000_000);
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 100 });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await vi.advanceTimersByTimeAsync(150); // initial streaming edit
+    turn.setSessionStatus({
+      type: "retry",
+      attempt: 2,
+      message: "rate_limit_exceeded",
+      next: 1_000_000_030_000,
+    });
+    // Retry status pushes an immediate edit (no throttle wait)
+    await vi.advanceTimersByTimeAsync(0);
+    const lastEdit = bot.calls.edits[bot.calls.edits.length - 1];
+    expect(String(lastEdit?.[2])).toContain("⏳");
+    expect(String(lastEdit?.[2])).toContain("attempt 2");
+    expect(String(lastEdit?.[2])).toContain("retry in 30s");
+    vi.useRealTimers();
+  });
+
+  it("setSessionStatus with type='idle' clears the retry banner", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000_000_000);
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 100 });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await vi.advanceTimersByTimeAsync(150);
+    turn.setSessionStatus({
+      type: "retry",
+      attempt: 1,
+      message: "msg",
+      next: 1_000_000_010_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const retryEdit = bot.calls.edits[bot.calls.edits.length - 1];
+    expect(String(retryEdit?.[2])).toContain("⏳");
+    // Now signal idle — banner should clear
+    turn.setSessionStatus({ type: "idle" });
+    await vi.advanceTimersByTimeAsync(0);
+    const clearedEdit = bot.calls.edits[bot.calls.edits.length - 1];
+    expect(String(clearedEdit?.[2])).not.toContain("⏳");
+    vi.useRealTimers();
+  });
+
+  it("setSessionStatus retry resets the watchdog so it doesn't fire during long backoff", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 100, idleWatchdogMs: 10_000 });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await vi.advanceTimersByTimeAsync(150); // streaming edit
+    // Drain 9 seconds of silence
+    await vi.advanceTimersByTimeAsync(9_000);
+    // Now signal retry — should reset the watchdog
+    turn.setSessionStatus({
+      type: "retry",
+      attempt: 1,
+      message: "msg",
+      next: Date.now() + 30_000,
+    });
+    // Drain another 9 seconds — watchdog would have fired by now without the reset
+    await vi.advanceTimersByTimeAsync(9_000);
+    // Turn should NOT be finalized — no chunkForTelegram-style multi-edit final view
+    expect(bot.calls.sends).toHaveLength(0);
+    vi.useRealTimers();
+  });
+
+  it("setSessionStatus is a no-op after finalize", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 100 });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await turn.finalize();
+    const editsBefore = bot.calls.edits.length;
+    turn.setSessionStatus({
+      type: "retry",
+      attempt: 1,
+      message: "msg",
+      next: Date.now() + 1000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bot.calls.edits.length).toBe(editsBefore);
+    vi.useRealTimers();
+  });
+});

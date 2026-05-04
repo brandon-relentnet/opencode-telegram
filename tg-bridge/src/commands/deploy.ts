@@ -291,6 +291,10 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
         else collected.push(p);
         turn.appendPart(p);
       },
+      onSessionStatus(properties) {
+        const status = (properties as { status?: unknown }).status;
+        if (status) turn.setSessionStatus(status);
+      },
       async onIdle() {
         try {
           const lastText =

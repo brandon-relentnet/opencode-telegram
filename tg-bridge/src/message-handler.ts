@@ -126,6 +126,10 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       const p = part as IncomingTextPart;
       if (typeof p.id === "string") turn.appendPart(p);
     },
+    onSessionStatus(properties) {
+      const status = (properties as { status?: unknown }).status;
+      if (status) turn.setSessionStatus(status);
+    },
     async onIdle() {
       try {
         await turn.finalize({ userMessageIds });

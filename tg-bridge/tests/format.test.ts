@@ -541,6 +541,79 @@ describe("renderStreamingView with elapsed time", () => {
   });
 });
 
+describe("renderStreamingView retry status", () => {
+  it("renders rate-limit banner when retryStatus provided", () => {
+    const out = renderStreamingView([], {
+      retryStatus: {
+        attempt: 2,
+        message: "rate_limit_exceeded",
+        next: 1_000_000_030_000,
+        now: 1_000_000_000_000,
+      },
+    });
+    expect(out).toBe("_⏳ rate\\_limit\\_exceeded · attempt 2 · retry in 30s_");
+  });
+
+  it("shows 'retrying now' when next is in the past", () => {
+    const out = renderStreamingView([], {
+      retryStatus: {
+        attempt: 1,
+        message: "Provider returned 429",
+        next: 1_000_000_000_000,
+        now: 1_000_000_001_000,
+      },
+    });
+    expect(out).toContain("retrying now");
+  });
+
+  it("formats long retry windows in m s", () => {
+    const out = renderStreamingView([], {
+      retryStatus: {
+        attempt: 3,
+        message: "msg",
+        next: 1_000_000_125_000,
+        now: 1_000_000_000_000,
+      },
+    });
+    expect(out).toContain("retry in 2m 5s");
+  });
+
+  it("truncates very long messages with ellipsis", () => {
+    const long = "x".repeat(100);
+    const out = renderStreamingView([], {
+      retryStatus: { attempt: 1, message: long, next: 1, now: 0 },
+    });
+    expect(out).toContain("…");
+    expect(out.length).toBeLessThan(200);
+  });
+
+  it("retry banner takes priority over elapsedSeconds", () => {
+    const out = renderStreamingView([], {
+      elapsedSeconds: 120,
+      retryStatus: { attempt: 1, message: "msg", next: 1_000, now: 0 },
+    });
+    expect(out).not.toContain("thinking");
+    expect(out).toContain("⏳");
+  });
+
+  it("retry banner appears below tool lines when both present", () => {
+    const out = renderStreamingView(
+      [
+        {
+          type: "tool",
+          tool: "read",
+          state: { status: "completed", input: { filePath: "x.ts" } },
+        },
+      ],
+      { retryStatus: { attempt: 1, message: "msg", next: 1_000, now: 0 } },
+    );
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("📄 read");
+    expect(lines[1]).toContain("⏳");
+  });
+});
+
 describe("renderStreamingView cancel button", () => {
   it("does not include button text in the rendered string (button is reply_markup only)", () => {
     // The string output is just text — no Cancel button glyph baked in.
