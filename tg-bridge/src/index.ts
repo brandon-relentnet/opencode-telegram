@@ -20,6 +20,7 @@ import { handleAbort } from "./commands/abort.js";
 import { handleStatus } from "./commands/status.js";
 import { handleModel } from "./commands/model.js";
 import { handleTextMessage } from "./message-handler.js";
+import { PinnedStatusManager, type PinnedStatusBot } from "./pinned-status.js";
 
 const PERMISSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const SQLITE_PATH = process.env["SQLITE_PATH"] ?? "/data/chat-state.sqlite";
@@ -91,76 +92,101 @@ async function main(): Promise<void> {
 
   const questions = new QuestionService(permBot as never, client, { log });
 
+  // PinnedStatusManager — the singleton-per-process owner of the chat's
+  // pinned status message. Slash-command handlers and the message handler
+  // notify it of state mutations and Turn lifecycle events; PSM debounces
+  // edits internally so spammy notifyStateChange calls coalesce. Cast to
+  // PinnedStatusBot because grammy's Bot api signatures use Other<...>
+  // helper types that don't structurally match the simpler shape PSM
+  // declares (parse_mode + reply_markup + disable_notification only).
+  const pinnedStatus = new PinnedStatusManager(
+    bot as unknown as PinnedStatusBot,
+    state,
+    { log },
+  );
+
   // 1) Whitelist gate runs before everything else.
   bot.use(whitelistMiddleware(config.allowedUserIds));
 
   // 2) Slash commands.
+  // Pre-build per-command deps objects so the callback_query router (below)
+  // can dispatch pin:* button presses to the same handlers without
+  // duplicating the wiring.
+  const projectsDeps = { workspaceRoot: config.workspaceRoot };
+  const switchDeps = {
+    client,
+    state,
+    workspaceRoot: config.workspaceRoot,
+    router,
+    pinnedStatus,
+  };
+  const cloneDeps = {
+    client,
+    state,
+    router,
+    bot: turnBot,
+    workspaceRoot: config.workspaceRoot,
+    defaultModel: config.defaultModel,
+    pinnedStatus,
+    log,
+  };
+  const initDeps = {
+    client,
+    state,
+    router,
+    bot: turnBot,
+    workspaceRoot: config.workspaceRoot,
+    defaultModel: config.defaultModel,
+    pinnedStatus,
+    log,
+  };
+  const initRemoteDeps = {
+    client,
+    state,
+    router,
+    bot: turnBot,
+    workspaceRoot: config.workspaceRoot,
+    defaultModel: config.defaultModel,
+    ghToken: config.ghToken,
+    ghOwner: config.ghOwner,
+    pinnedStatus,
+    log,
+  };
+  const deployDeps = {
+    client,
+    state,
+    router,
+    bot: turnBot,
+    workspaceRoot: config.workspaceRoot,
+    defaultModel: config.defaultModel,
+    coolifyConfig: {
+      url: config.coolifyUrl,
+      token: config.coolifyToken,
+      serverUuid: config.coolifyServerUuid,
+      projectUuid: config.coolifyProjectUuid,
+      githubAppUuid: config.coolifyGithubAppUuid,
+    },
+    pinnedStatus,
+    log,
+  };
+  const newDeps = { client, state, router, pinnedStatus };
+  const modelDeps = { client, state, pinnedStatus };
+
   bot.command("help", (ctx: Context) => handleHelp(ctx));
-  bot.command("projects", (ctx) => handleProjects(ctx, { workspaceRoot: config.workspaceRoot }));
-  bot.command("switch", (ctx) =>
-    handleSwitch(ctx, { client, state, workspaceRoot: config.workspaceRoot, router }),
-  );
-  bot.command("clone", (ctx) =>
-    handleClone(ctx, {
-      client,
-      state,
-      router,
-      bot: turnBot,
-      workspaceRoot: config.workspaceRoot,
-      defaultModel: config.defaultModel,
-      log,
-    }),
-  );
-  bot.command("init", (ctx) =>
-    handleInit(ctx, {
-      client,
-      state,
-      router,
-      bot: turnBot,
-      workspaceRoot: config.workspaceRoot,
-      defaultModel: config.defaultModel,
-      log,
-    }),
-  );
+  bot.command("projects", (ctx) => handleProjects(ctx, projectsDeps));
+  bot.command("switch", (ctx) => handleSwitch(ctx, switchDeps));
+  bot.command("clone", (ctx) => handleClone(ctx, cloneDeps));
+  bot.command("init", (ctx) => handleInit(ctx, initDeps));
   // NOTE: Telegram bot commands cannot contain hyphens (only [A-Za-z0-9_]),
   // so we register as "initremote" not "init-remote". /init-remote would be
   // parsed by Telegram as command="init" with arg="-remote ...", routing to
   // the /init handler instead.
-  bot.command("initremote", (ctx) =>
-    handleInitRemote(ctx, {
-      client,
-      state,
-      router,
-      bot: turnBot,
-      workspaceRoot: config.workspaceRoot,
-      defaultModel: config.defaultModel,
-      ghToken: config.ghToken,
-      ghOwner: config.ghOwner,
-      log,
-    }),
-  );
-  bot.command("deploy", (ctx) =>
-    handleDeploy(ctx, {
-      client,
-      state,
-      router,
-      bot: turnBot,
-      workspaceRoot: config.workspaceRoot,
-      defaultModel: config.defaultModel,
-      coolifyConfig: {
-        url: config.coolifyUrl,
-        token: config.coolifyToken,
-        serverUuid: config.coolifyServerUuid,
-        projectUuid: config.coolifyProjectUuid,
-        githubAppUuid: config.coolifyGithubAppUuid,
-      },
-      log,
-    }),
-  );
-  bot.command("new", (ctx) => handleNew(ctx, { client, state, router }));
+  bot.command("initremote", (ctx) => handleInitRemote(ctx, initRemoteDeps));
+  bot.command("deploy", (ctx) => handleDeploy(ctx, deployDeps));
+  bot.command("new", (ctx) => handleNew(ctx, newDeps));
   bot.command("abort", (ctx) => handleAbort(ctx, { client, state }));
   bot.command("status", (ctx) => handleStatus(ctx, { state }));
-  bot.command("model", (ctx) => handleModel(ctx, { client, state }));
+  bot.command("model", (ctx) => handleModel(ctx, modelDeps));
 
   // 3) Permission + question button callbacks.
   bot.on("callback_query:data", async (ctx) => {
@@ -189,8 +215,42 @@ async function main(): Promise<void> {
           }
         : {}),
     };
-    // Route by callback-data prefix. `qst:` belongs to QuestionService;
-    // anything else (notably `perm:`) goes to PermissionService.
+    // Route by callback-data prefix. `pin:` belongs to the pinned-status
+    // inline keyboard (its 5 buttons re-enter existing slash-command flows);
+    // `qst:` belongs to QuestionService; anything else (notably `perm:`)
+    // goes to PermissionService.
+    if (data.startsWith("pin:")) {
+      // Acknowledge the press so Telegram clears the spinner before we go
+      // do work that may touch the network. answerCallbackQuery is
+      // idempotent and best-effort.
+      try {
+        await ctx.answerCallbackQuery();
+      } catch (err) {
+        log.warn({ err }, "answerCallbackQuery for pin: failed");
+      }
+      const action = data.slice("pin:".length);
+      // pin:sessions is wired in Task 10 when handleSessions lands. Until
+      // then, no-op rather than crash. The other four actions route to
+      // existing slash-command handlers using the already-built deps.
+      if (action === "switch") {
+        await handleProjects(ctx as never, projectsDeps);
+        return;
+      }
+      if (action === "new") {
+        await handleNew(ctx as never, newDeps);
+        return;
+      }
+      if (action === "models") {
+        await handleModel(ctx as never, modelDeps);
+        return;
+      }
+      if (action === "deploy") {
+        await handleDeploy(ctx as never, deployDeps);
+        return;
+      }
+      log.info({ action }, "unhandled pin: callback action (pin:sessions arrives in Task 10)");
+      return;
+    }
     if (data.startsWith("qst:")) {
       await questions.handleCallback(cb);
       return;
@@ -228,6 +288,7 @@ async function main(): Promise<void> {
       questions,
       bot: turnBot,
       defaultModel: config.defaultModel,
+      pinnedStatus,
       log,
     });
   });

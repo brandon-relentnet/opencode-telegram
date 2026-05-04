@@ -5,6 +5,7 @@ import { escapeMarkdownV2 } from "../format.js";
 import { describeError } from "../errors.js";
 import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
+import type { PinnedStatusDeps } from "../pinned-status.js";
 
 export interface SwitchDeps {
   client: OpencodeClient;
@@ -17,6 +18,12 @@ export interface SwitchDeps {
    * a scope nothing reads, and the placeholder would hang at "thinking…".
    */
   router: { ensureDirectory(directory: string): boolean };
+  /**
+   * Pinned-status manager. /switch calls notifyStateChange after persisting
+   * the new project + session so the pinned message reflects the change.
+   * Optional so tests that don't care about pinned status can omit it.
+   */
+  pinnedStatus?: PinnedStatusDeps;
 }
 
 /**
@@ -89,6 +96,8 @@ export async function handleSwitch(ctx: Context, deps: SwitchDeps): Promise<void
   // the user sends their first prompt. Idempotent — no-op if we're already
   // subscribed (e.g. another chat is in this project, or we hit boot-seed).
   deps.router.ensureDirectory(projectPath);
+  // Pinned message: project + session changed. PSM debounces internally.
+  deps.pinnedStatus?.notifyStateChange(ctx.chat!.id);
 
   await ctx.reply(buildSwitchConfirmation(arg, projectPath, session.id), {
     parse_mode: "MarkdownV2",

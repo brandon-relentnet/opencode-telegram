@@ -3,6 +3,7 @@ import { escapeMarkdownV2 } from "../format.js";
 import { describeError } from "../errors.js";
 import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
+import type { PinnedStatusDeps } from "../pinned-status.js";
 
 export interface NewDeps {
   client: OpencodeClient;
@@ -13,6 +14,11 @@ export interface NewDeps {
    * (because /switch opens it), but ensure is idempotent and cheap.
    */
   router: { ensureDirectory(directory: string): boolean };
+  /**
+   * Pinned-status manager. /new calls notifyStateChange after rotating to
+   * the freshly-created session so the pinned message reflects the change.
+   */
+  pinnedStatus?: PinnedStatusDeps;
 }
 
 export async function handleNew(ctx: Context, deps: NewDeps): Promise<void> {
@@ -40,6 +46,7 @@ export async function handleNew(ctx: Context, deps: NewDeps): Promise<void> {
   }
   deps.state.setSession(chatId, session.id);
   deps.router.ensureDirectory(current.projectPath);
+  deps.pinnedStatus?.notifyStateChange(chatId);
 
   await ctx.reply(
     [

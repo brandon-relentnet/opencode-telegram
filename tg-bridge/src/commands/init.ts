@@ -10,6 +10,7 @@ import type { ChatStateRepo } from "../chat-state.js";
 import type { SessionEventHandler } from "../event-router.js";
 import type { TurnBot } from "../turn.js";
 import type { Logger } from "pino";
+import type { PinnedStatusDeps } from "../pinned-status.js";
 
 export interface InitDeps {
   client: OpencodeClient;
@@ -21,6 +22,7 @@ export interface InitDeps {
   bot: TurnBot;
   workspaceRoot: string;
   defaultModel: string;
+  pinnedStatus?: PinnedStatusDeps;
   log?: Pick<Logger, "info" | "warn" | "error">;
 }
 
@@ -69,6 +71,7 @@ export async function handleInit(ctx: Context, deps: InitDeps): Promise<void> {
         router: deps.router,
         bot: deps.bot,
         defaultModel: deps.defaultModel,
+        ...(deps.pinnedStatus ? { pinnedStatus: deps.pinnedStatus } : {}),
         ...(deps.log ? { log: deps.log } : {}),
       },
     );

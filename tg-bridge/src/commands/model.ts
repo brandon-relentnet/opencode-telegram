@@ -3,10 +3,16 @@ import { escapeMarkdownV2 } from "../format.js";
 import { describeError } from "../errors.js";
 import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
+import type { PinnedStatusDeps } from "../pinned-status.js";
 
 export interface ModelDeps {
   client: OpencodeClient;
   state: ChatStateRepo;
+  /**
+   * Pinned-status manager. /model calls notifyStateChange after persisting
+   * a new model selection so the pinned message reflects the change.
+   */
+  pinnedStatus?: PinnedStatusDeps;
 }
 
 interface ProviderRecord {
@@ -67,5 +73,6 @@ export async function handleModel(ctx: Context, deps: ModelDeps): Promise<void> 
   }
 
   deps.state.setModel(chatId, arg);
+  deps.pinnedStatus?.notifyStateChange(chatId);
   await ctx.reply(escapeMarkdownV2(`Model set to ${arg}.`), { parse_mode: "MarkdownV2" });
 }

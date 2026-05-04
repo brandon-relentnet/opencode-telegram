@@ -13,6 +13,20 @@ export interface PinnedStatusBot {
 
 export type StatusKind = "idle" | "working" | "failed" | "aborted";
 
+/**
+ * Narrow surface PSM exposes to slash-command handlers and the message
+ * handler. Deps interfaces depend on this rather than the full
+ * PinnedStatusManager class so test fixtures don't have to instantiate a
+ * real manager (with debounce timers + a Telegram bot stub).
+ */
+export interface PinnedStatusDeps {
+  setIdle(chatId: number, detail?: string): void;
+  setWorking(chatId: number, detail: string): void;
+  setFailed(chatId: number, detail: string): void;
+  setAborted(chatId: number): void;
+  notifyStateChange(chatId: number): void;
+}
+
 interface LiveState {
   status: StatusKind;
   statusDetail: string | null;

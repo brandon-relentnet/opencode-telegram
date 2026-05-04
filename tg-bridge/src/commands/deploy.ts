@@ -8,6 +8,7 @@ import { parseModelId } from "../config.js";
 import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
 import type { SessionEventHandler } from "../event-router.js";
+import type { PinnedStatusDeps } from "../pinned-status.js";
 
 export interface CoolifyConfig {
   url: string | undefined;
@@ -28,6 +29,12 @@ export interface DeployDeps {
   workspaceRoot: string;
   defaultModel: string;
   coolifyConfig: CoolifyConfig;
+  /**
+   * Pinned-status manager. handleDeploy flips it to Working at session
+   * start, calls notifyStateChange after persisting a new Coolify app
+   * (state.setCoolifyApp), and setFailed on error paths.
+   */
+  pinnedStatus?: PinnedStatusDeps;
   log?: Pick<Logger, "info" | "warn" | "error">;
 }
 
@@ -253,6 +260,12 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
       : buildSubsequentDeployPrompt(projectPath, existing.uuid);
 
     deps.router.ensureDirectory(projectPath);
+    // Pinned status reflects the in-flight deploy. The detail string keeps
+    // the user oriented when the placeholder scrolls off-screen.
+    deps.pinnedStatus?.setWorking(
+      chatId,
+      isFirst ? "deploying (first)" : "deploying",
+    );
     const session = await deps.client.createSession(`tg:deploy:${projectPath}`, {
       directory: projectPath,
     });
@@ -298,6 +311,9 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
             // queued setTimeout can't fire afterward and revert.
             await turn.cancel();
             deps.state.setCoolifyApp(chatId, projectPath, result.uuid, result.fqdn);
+            // Coolify-app row changed → pinned message gains a "Deploy" line.
+            deps.pinnedStatus?.notifyStateChange(chatId);
+            deps.pinnedStatus?.setIdle(chatId);
             const dashboard = dashboardUrl(result.uuid);
             const lines = [
               `✅ Deployed: https://${result.fqdn}`,
@@ -313,6 +329,7 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
             );
           } else if (result?.kind === "subsequent" && existing) {
             await turn.cancel();
+            deps.pinnedStatus?.setIdle(chatId);
             const dashboard = dashboardUrl(existing.uuid);
             const lines = [
               `✅ Redeployed: https://${existing.fqdn}`,
@@ -333,6 +350,9 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
             if (!isFirst && /^app_not_found:/.test(result.reason)) {
               await turn.cancel();
               deps.state.clearCoolifyApp(chatId, projectPath);
+              // Cleared coolify_app → pinned "Deploy" line should disappear.
+              deps.pinnedStatus?.notifyStateChange(chatId);
+              deps.pinnedStatus?.setFailed(chatId, "Coolify app missing");
               await safeEdit(
                 deps.bot,
                 chatId,
@@ -345,10 +365,13 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
               );
             } else {
               await turn.showError(result.reason);
+              deps.pinnedStatus?.setFailed(chatId, result.reason.slice(0, 80));
             }
           } else {
             // Unparseable reply — let Turn render whatever the agent returned.
             await turn.finalize({ userMessageIds });
+            // Treat as Idle: agent finished, just didn't follow the contract.
+            deps.pinnedStatus?.setIdle(chatId);
           }
         } catch (err) {
           deps.log?.error?.(
@@ -362,14 +385,16 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
         }
       },
       async onError(err) {
+        const msg = describeError(err);
         try {
-          await turn.showError(describeError(err));
+          await turn.showError(msg);
         } catch (showErr) {
           deps.log?.error?.(
             { chatId, projectPath, isFirst, err: describeError(showErr) },
             "deploy onError handler threw",
           );
         }
+        deps.pinnedStatus?.setFailed(chatId, msg.slice(0, 80));
         if (!unregistered) {
           unregistered = true;
           unregister();
@@ -387,9 +412,11 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
         directory: projectPath,
       })
       .catch(async (err) => {
+        const msg = describeError(err);
         try {
-          await turn.showError(`prompt failed: ${describeError(err)}`);
+          await turn.showError(`prompt failed: ${msg}`);
         } finally {
+          deps.pinnedStatus?.setFailed(chatId, msg.slice(0, 80));
           if (!unregistered) {
             unregistered = true;
             unregister();

@@ -9,6 +9,7 @@ import type { OpencodeClient } from "./opencode-client.js";
 import type { ChatStateRepo } from "./chat-state.js";
 import type { SessionEventHandler } from "./event-router.js";
 import type { PermissionService } from "./permissions.js";
+import type { PinnedStatusDeps } from "./pinned-status.js";
 
 export interface MessageHandlerDeps {
   state: ChatStateRepo;
@@ -33,6 +34,13 @@ export interface MessageHandlerDeps {
    * Format: "<providerID>/<modelID>" (e.g. "anthropic/claude-sonnet-4-5").
    */
   defaultModel: string;
+  /**
+   * Pinned-status manager. Each turn lifecycle event (receive / idle /
+   * error) drives a status update so the pinned message reflects current
+   * activity. Optional so tests that don't care about the pinned message
+   * can omit it; the call sites no-op when undefined.
+   */
+  pinnedStatus?: PinnedStatusDeps;
   /**
    * Optional logger. When present, the handler logs permission-event
    * receipts and any errors that occur dispatching them. Without this,
@@ -71,6 +79,11 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
   // 👍 — acknowledge receipt immediately. Done before any heavy work so the
   // user gets feedback even if opencode is slow to respond.
   void reactProcessing(deps.bot as never, chatId, userMessageId, deps.log);
+
+  // Flip the pinned status to "Working" with a short preview of the prompt
+  // so the chat header reflects the in-flight turn. PSM debounces edits
+  // internally; calling here is fire-and-forget by design.
+  deps.pinnedStatus?.setWorking(chatId, text.slice(0, 60));
 
   const placeholder = await ctx.reply(escapeMarkdownV2("thinking…"), {
     parse_mode: "MarkdownV2",
@@ -113,6 +126,8 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       }
       // ✅ — turn finalized successfully. Replaces the prior 👍.
       void reactDone(deps.bot as never, chatId, userMessageId, deps.log);
+      // Flip the pinned status back to Idle now that the turn finished.
+      deps.pinnedStatus?.setIdle(chatId);
       if (!unregistered) {
         unregistered = true;
         unregister();
@@ -130,6 +145,9 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       }
       // ❌ — session-level error. Replaces the prior 👍.
       void reactFailed(deps.bot as never, chatId, userMessageId, deps.log);
+      // Surface the failure on the pinned message too. Truncate to 80 chars
+      // to keep the line skim-readable in the pinned header.
+      deps.pinnedStatus?.setFailed(chatId, msg.slice(0, 80));
       if (!unregistered) {
         unregistered = true;
         unregister();
@@ -216,6 +234,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       } finally {
         // ❌ — network/HTTP error before opencode emitted any events.
         void reactFailed(deps.bot as never, chatId, userMessageId, deps.log);
+        deps.pinnedStatus?.setFailed(chatId, msg.slice(0, 80));
         if (!unregistered) {
           unregistered = true;
           unregister();

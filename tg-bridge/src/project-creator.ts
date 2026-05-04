@@ -16,6 +16,7 @@ import type { OpencodeClient } from "./opencode-client.js";
 import type { ChatStateRepo } from "./chat-state.js";
 import type { SessionEventHandler } from "./event-router.js";
 import type { TurnBot } from "./turn.js";
+import type { PinnedStatusDeps } from "./pinned-status.js";
 import { Turn, type IncomingPart } from "./turn.js";
 import { safeEdit } from "./safe-telegram.js";
 import { buildSwitchConfirmation } from "./commands/switch.js";
@@ -171,6 +172,13 @@ export interface CreateProjectDeps {
   };
   bot: TurnBot;
   defaultModel: string;
+  /**
+   * Pinned-status manager. createProject sets the pinned message to
+   * Working at session start, Idle on success (after auto-switch persists
+   * the new project), Failed on error. Optional so legacy/test call sites
+   * can omit it.
+   */
+  pinnedStatus?: PinnedStatusDeps;
   log?: Pick<Logger, "info" | "warn" | "error">;
 }
 
@@ -201,6 +209,18 @@ export async function createProject(
   // Ensure SSE subscription on the workspace root so the one-shot session's
   // events reach our handler. Idempotent.
   deps.router.ensureDirectory(args.workspaceRoot);
+
+  // Reflect the in-flight create operation on the pinned status header so
+  // the user sees what's happening at a glance even when the placeholder
+  // scrolls off-screen.
+  deps.pinnedStatus?.setWorking(
+    args.chatId,
+    args.kind === "clone"
+      ? `cloning ${args.name}`
+      : args.kind === "init-remote"
+      ? `initializing ${args.name} (+ remote)`
+      : `initializing ${args.name}`,
+  );
 
   // Open the one-shot session for the creation operation.
   const sessionTitle = `tg:${args.kind}:${args.name}`;
@@ -250,9 +270,18 @@ export async function createProject(
           // to "⚡ bash mkdir... / thinking…".
           await turn.cancel();
           await performAutoSwitch(args, deps);
+          // performAutoSwitch wrote new project + session into chat-state;
+          // notify PSM so the pinned message shows the new project name on
+          // its next flush. setIdle clears the "Working" detail.
+          deps.pinnedStatus?.setIdle(args.chatId);
+          deps.pinnedStatus?.notifyStateChange(args.chatId);
         } else {
           // Failure path: render the LLM's error response into the placeholder.
           await turn.finalize({ userMessageIds });
+          deps.pinnedStatus?.setFailed(
+            args.chatId,
+            `${args.kind} ${args.name} failed`,
+          );
         }
       } catch (err) {
         deps.log?.error?.(
@@ -266,14 +295,16 @@ export async function createProject(
       }
     },
     async onError(err) {
+      const msg = describeError(err);
       try {
-        await turn.showError(describeError(err));
+        await turn.showError(msg);
       } catch (showErr) {
         deps.log?.error?.(
           { chatId: args.chatId, name: args.name, kind: args.kind, err: describeError(showErr) },
           "createProject onError handler threw",
         );
       }
+      deps.pinnedStatus?.setFailed(args.chatId, msg.slice(0, 80));
       if (!unregistered) {
         unregistered = true;
         unregister();
@@ -296,9 +327,11 @@ export async function createProject(
       directory: args.workspaceRoot,
     })
     .catch(async (err) => {
+      const msg = describeError(err);
       try {
-        await turn.showError(`prompt failed: ${describeError(err)}`);
+        await turn.showError(`prompt failed: ${msg}`);
       } finally {
+        deps.pinnedStatus?.setFailed(args.chatId, msg.slice(0, 80));
         if (!unregistered) {
           unregistered = true;
           unregister();
