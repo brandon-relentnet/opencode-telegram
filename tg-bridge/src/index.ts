@@ -460,6 +460,7 @@ async function registerCommands(bot: Bot, log: pino.Logger): Promise<void> {
       { command: "new", description: "Start a fresh session in current project" },
       { command: "abort", description: "Cancel the current operation" },
       { command: "status", description: "Show current chat state" },
+      { command: "info", description: "Show full project + session + model details" },
       { command: "model", description: "List models (tap to set)" },
       { command: "sessions", description: "Recent sessions (tap to switch)" },
       { command: "deploy", description: "Push + deploy current project to Coolify" },

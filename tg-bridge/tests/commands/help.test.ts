@@ -23,6 +23,7 @@ describe("handleHelp", () => {
       "/deploy",
       "/abort",
       "/status",
+      "/info",
       "/model",
       "/sessions",
       "/pin",

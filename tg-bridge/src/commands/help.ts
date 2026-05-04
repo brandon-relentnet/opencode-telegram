@@ -13,6 +13,7 @@ const RAW = [
   "/deploy — push pending changes + create-or-update Coolify app + deploy",
   "/abort — abort the current running task",
   "/status — show current project, session, and model",
+  "/info — full project + git + session + model + deploy details",
   "/model [providerID/modelID] — list models (tap to set), or set directly",
   "/sessions — recent sessions in this project (tap to switch)",
   "/pin — re-engage the pinned status message",
