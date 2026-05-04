@@ -258,11 +258,15 @@ describe("Turn idle watchdog", () => {
     turn.appendPart({ id: "p3", type: "text", text: "third" });
     await vi.advanceTimersByTimeAsync(2000);
     expect(bot.calls.edits.length).toBeGreaterThan(0);
-    // All edits so far must be the streaming view ("_thinking…_"), never the
-    // final view — watchdog has not fired. If the watchdog had fired during
-    // those 100s, the placeholder would show the rendered final view instead.
+    // All edits so far must be the streaming view ("_thinking…_" or its
+    // heartbeat-decorated form "_thinking · Ns elapsed_"), never the final
+    // view — watchdog has not fired. If the watchdog had fired during those
+    // 100s, the placeholder would show the rendered final view (HTML).
     for (const call of bot.calls.edits) {
-      expect(call[2]).toBe("_thinking…_");
+      const text = call[2] as string;
+      expect(text.startsWith("_thinking")).toBe(true);
+      expect(text.endsWith("_")).toBe(true);
+      expect(text).not.toContain("<i>");
     }
     vi.useRealTimers();
   });
@@ -278,6 +282,34 @@ describe("Turn idle watchdog", () => {
     // Watchdog should be cancelled; no double-finalize
     await vi.advanceTimersByTimeAsync(60000);
     // No second finalize edit beyond what finalize() already did
+    expect(bot.calls.edits.length).toBe(editsAfterFinalize);
+    vi.useRealTimers();
+  });
+});
+
+describe("Turn heartbeat (C1)", () => {
+  it("starts heartbeat after first appendPart", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 100, heartbeatMs: 10000 });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await vi.advanceTimersByTimeAsync(150); // first edit fires
+    const editsBefore = bot.calls.edits.length;
+    await vi.advanceTimersByTimeAsync(10000); // heartbeat tick
+    expect(bot.calls.edits.length).toBeGreaterThan(editsBefore);
+    const lastEditText = bot.calls.edits[bot.calls.edits.length - 1]![2] as string;
+    expect(lastEditText).toMatch(/elapsed/);
+    vi.useRealTimers();
+  });
+
+  it("heartbeat stops on finalize", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 100, heartbeatMs: 10000 });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await turn.finalize();
+    const editsAfterFinalize = bot.calls.edits.length;
+    await vi.advanceTimersByTimeAsync(20000);
     expect(bot.calls.edits.length).toBe(editsAfterFinalize);
     vi.useRealTimers();
   });

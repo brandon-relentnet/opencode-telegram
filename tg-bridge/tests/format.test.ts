@@ -524,3 +524,18 @@ describe("renderToolLine richer (C3)", () => {
     expect(formatDuration(125_000)).toBe("2m 5s");
   });
 });
+
+describe("renderStreamingView with elapsed time", () => {
+  it("includes elapsed time when option provided", () => {
+    const out = renderStreamingView([], { elapsedSeconds: 12 });
+    expect(out).toBe("_thinking · 12s elapsed_");
+  });
+  it("formats minutes for long elapsed", () => {
+    const out = renderStreamingView([], { elapsedSeconds: 125 });
+    expect(out).toBe("_thinking · 2m 5s elapsed_");
+  });
+  it("omits elapsed when not provided (backward compat)", () => {
+    const out = renderStreamingView([]);
+    expect(out).toBe("_thinking…_");
+  });
+});

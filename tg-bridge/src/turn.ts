@@ -32,6 +32,14 @@ export interface TurnOptions {
    * dropped mid-turn) and self-finalizes. Default 60s. Reset on every part.
    */
   idleWatchdogMs?: number;
+  /**
+   * Heartbeat interval (C1): once at least one part has arrived, refresh
+   * the streaming-view placeholder every `heartbeatMs` so the user sees the
+   * elapsed-time counter advance ("_thinking · 12s elapsed_"). Distinct
+   * from the watchdog: heartbeat fires repeatedly during activity, the
+   * watchdog fires once after total silence. Default 10s.
+   */
+  heartbeatMs?: number;
 }
 
 export class Turn {
@@ -49,6 +57,9 @@ export class Turn {
   private throttleMs: number;
   private readonly idleWatchdogMs: number;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly heartbeatMs: number;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly startedAt: number;
 
   constructor(
     private bot: TurnBot,
@@ -58,7 +69,9 @@ export class Turn {
   ) {
     this.throttleMs = options.throttleMs ?? 1000;
     this.idleWatchdogMs = options.idleWatchdogMs ?? 60_000;
-    this.lastEditAt = Date.now();
+    this.heartbeatMs = options.heartbeatMs ?? 10_000;
+    this.startedAt = Date.now();
+    this.lastEditAt = this.startedAt;
   }
 
   appendPart(part: IncomingPart): void {
@@ -67,6 +80,7 @@ export class Turn {
     this.parts.set(part.id, part);
     this.scheduleEdit();
     this.resetWatchdog();
+    this.ensureHeartbeat();
   }
 
   async showError(error: string): Promise<void> {
@@ -74,6 +88,7 @@ export class Turn {
     this.finalized = true;
     this.cancelTimer();
     this.cancelWatchdog();
+    this.cancelHeartbeat();
     // showError uses MarkdownV2 (matches the escaping applied to `error`).
     // Final-view edits switched to HTML, but error placeholders are tiny
     // single-line strings produced from MarkdownV2-escaped input — keeping
@@ -101,6 +116,7 @@ export class Turn {
     this.finalized = true;
     this.cancelTimer();
     this.cancelWatchdog();
+    this.cancelHeartbeat();
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
   }
 
@@ -109,6 +125,7 @@ export class Turn {
     this.finalized = true;
     this.cancelTimer();
     this.cancelWatchdog();
+    this.cancelHeartbeat();
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
 
     const text = renderFinalView(
@@ -138,8 +155,46 @@ export class Turn {
     this.pendingTimer = setTimeout(() => {
       this.pendingTimer = null;
       this.lastEditAt = Date.now();
+      // appendPart-driven edits omit the elapsed-time suffix — fresh activity
+      // already signals liveness. Only the heartbeat tick (silence path)
+      // renders "_thinking · Ns elapsed_" so the user sees the counter
+      // advance when no parts are arriving.
       this.inFlightEdit = this.editNow();
     }, delay);
+  }
+
+  private currentElapsedSeconds(): number {
+    return Math.floor((Date.now() - this.startedAt) / 1000);
+  }
+
+  /**
+   * Heartbeat (C1): once any part has arrived, refresh the placeholder
+   * every `heartbeatMs` so the elapsed-time counter advances even when
+   * opencode is silent (e.g. a long-running tool with no streamed output).
+   * Idempotent — only the first appendPart starts the timer.
+   *
+   * The heartbeat tick re-runs `editNow` directly (not `scheduleEdit`) so
+   * the elapsed-seconds bump is unconditional, not coalesced with a
+   * pending throttle that might already have fired. Heartbeats are 10s
+   * apart by default and the throttle is 1s, so we never collide.
+   */
+  private ensureHeartbeat(): void {
+    if (this.heartbeatTimer || this.finalized) return;
+    this.heartbeatTimer = setInterval(() => {
+      if (this.finalized) {
+        this.cancelHeartbeat();
+        return;
+      }
+      this.lastEditAt = Date.now();
+      this.inFlightEdit = this.editNow(this.currentElapsedSeconds());
+    }, this.heartbeatMs);
+  }
+
+  private cancelHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 
   private cancelTimer(): void {
@@ -178,9 +233,12 @@ export class Turn {
     }
   }
 
-  private async editNow(): Promise<void> {
+  private async editNow(elapsedSeconds?: number): Promise<void> {
     if (this.finalized) return;
-    const text = renderStreamingView(this.partsArray() as unknown as readonly RenderablePart[]);
+    const text = renderStreamingView(
+      this.partsArray() as unknown as readonly RenderablePart[],
+      elapsedSeconds != null ? { elapsedSeconds } : {},
+    );
     if (text.length === 0) return;
     const [first] = chunkForTelegram(text);
     if (!first) return;

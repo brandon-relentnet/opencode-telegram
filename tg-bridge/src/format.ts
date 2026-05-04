@@ -165,19 +165,45 @@ const STREAMING_VIEW_CAP = 30;
 const THINKING_MARKER = "_thinking…_";
 
 /**
+ * Format an elapsed-second count for the streaming-view "thinking" line.
+ * Distinct from `formatDuration(ms)` because the heartbeat (C1) gives us
+ * whole-second integers — going through ms would round-trip lossy on the
+ * sub-second branch.
+ */
+function formatDurationFromSeconds(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${s}s`;
+}
+
+export interface StreamingViewOptions {
+  /**
+   * If provided, replaces the static "_thinking…_" placeholder with
+   * "_thinking · <Ns or Mm Ss> elapsed_". Used by the Turn heartbeat (C1)
+   * to signal liveness while the agent works.
+   */
+  elapsedSeconds?: number;
+}
+
+/**
  * Render the placeholder content while the agent is working.
  *
  * Filters to tool parts only (text parts are hidden during streaming to
  * avoid partial-MarkdownV2 rendering bugs). Each tool becomes one line via
  * renderToolLine. If more than STREAMING_VIEW_CAP tools are present, the
  * oldest are collapsed into a single italic summary line. A trailing
- * "_thinking…_" line indicates work in progress.
+ * "_thinking…_" line indicates work in progress (or "_thinking · Ns
+ * elapsed_" when `options.elapsedSeconds` is provided by the heartbeat).
  *
  * The output uses only: inline code (single backticks), italic
  * (underscores), emoji, newlines. NO fenced code blocks. Structurally
  * cannot produce unbalanced fences.
  */
-export function renderStreamingView(parts: readonly RenderablePart[]): string {
+export function renderStreamingView(
+  parts: readonly RenderablePart[],
+  options: StreamingViewOptions = {},
+): string {
   const toolParts = parts.filter((p) => p.type === "tool");
   const lines: string[] = [];
   if (toolParts.length > STREAMING_VIEW_CAP) {
@@ -190,7 +216,11 @@ export function renderStreamingView(parts: readonly RenderablePart[]): string {
   } else {
     for (const part of toolParts) lines.push(renderToolLine(part));
   }
-  lines.push(THINKING_MARKER);
+  const thinking =
+    options.elapsedSeconds != null
+      ? `_thinking · ${formatDurationFromSeconds(options.elapsedSeconds)} elapsed_`
+      : THINKING_MARKER;
+  lines.push(thinking);
   return lines.join("\n");
 }
 
