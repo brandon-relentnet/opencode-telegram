@@ -9,7 +9,7 @@ import { EventRouter } from "./event-router.js";
 import { PermissionService } from "./permissions.js";
 import { QuestionService } from "./question-service.js";
 import { handleHelp } from "./commands/help.js";
-import { handleProjects } from "./commands/projects.js";
+import { handleProjects, handleProjectCallback } from "./commands/projects.js";
 import { handleSwitch } from "./commands/switch.js";
 import { handleClone } from "./commands/clone.js";
 import { handleInit } from "./commands/init.js";
@@ -18,7 +18,7 @@ import { handleDeploy } from "./commands/deploy.js";
 import { handleNew } from "./commands/new.js";
 import { handleAbort } from "./commands/abort.js";
 import { handleStatus } from "./commands/status.js";
-import { handleModel } from "./commands/model.js";
+import { handleModel, handleModelCallback } from "./commands/model.js";
 import { handlePin, handleUnpin } from "./commands/pin.js";
 import { handleSessions, handleSessionCallback } from "./commands/sessions.js";
 import { handleTextMessage } from "./message-handler.js";
@@ -115,6 +115,18 @@ async function main(): Promise<void> {
   // can dispatch pin:* button presses to the same handlers without
   // duplicating the wiring.
   const projectsDeps = { workspaceRoot: config.workspaceRoot };
+  // Tap-to-switch on /projects and pin:switch needs the same wiring as
+  // /switch — opencode client to mint a session anchored to the project,
+  // chat-state to persist project+session, the SSE router so the new
+  // project's directory subscription is open before the user's next
+  // prompt, and PinnedStatusManager so the pin re-renders.
+  const projectsCallbackDeps = {
+    workspaceRoot: config.workspaceRoot,
+    client,
+    state,
+    router,
+    pinnedStatus,
+  };
   const switchDeps = {
     client,
     state,
@@ -266,6 +278,20 @@ async function main(): Promise<void> {
       // answers the callback query itself (clears the spinner) before
       // mutating chat_state.
       await handleSessionCallback(ctx as never, sessionsDeps);
+      return;
+    }
+    if (data.startsWith("proj:")) {
+      // Tap-to-switch from the /projects inline keyboard. Handler answers
+      // the callback query itself; deps mirror /switch so the SSE
+      // subscription is opened and pinned status is nudged.
+      await handleProjectCallback(ctx as never, projectsCallbackDeps);
+      return;
+    }
+    if (data.startsWith("model:")) {
+      // Tap-to-set from the /model inline keyboard. Handler validates
+      // the embedded provider/model ID, persists, and notifies pinned
+      // status. answerCallbackQuery is handled inside the handler.
+      await handleModelCallback(ctx as never, modelDeps);
       return;
     }
     if (data.startsWith("qst:")) {
