@@ -219,3 +219,66 @@ describe("Turn", () => {
     expect(bot.calls.edits).toHaveLength(1);
   });
 });
+
+describe("Turn idle watchdog", () => {
+  it("calls finalize() if no part updates arrive for IDLE_WATCHDOG_MS", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 1000, idleWatchdogMs: 60000 });
+    turn.appendPart({ id: "p1", type: "text", text: "thinking..." });
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(bot.calls.edits.length).toBeGreaterThan(0);
+    // First (streaming) edit hides text parts → "_thinking…_"
+    expect(bot.calls.edits[0]![2]).toBe("_thinking…_");
+    // No more parts arrive; advance past watchdog
+    await vi.advanceTimersByTimeAsync(60000);
+    // Watchdog should have triggered finalize() — that produces a SECOND
+    // edit with the final view (escaped text), not the streaming placeholder.
+    expect(bot.calls.edits.length).toBeGreaterThanOrEqual(2);
+    expect(bot.calls.edits[bot.calls.edits.length - 1]![2]).toBe("thinking\\.\\.\\.");
+    // After finalize, further parts are ignored
+    turn.appendPart({ id: "p2", type: "text", text: "late" });
+    await vi.advanceTimersByTimeAsync(2000);
+    // Verify finalized state by checking that no edit fired for "late"
+    const finalEditCount = bot.calls.edits.length;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(bot.calls.edits.length).toBe(finalEditCount);
+    vi.useRealTimers();
+  });
+
+  it("watchdog resets when new part arrives within window", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 1000, idleWatchdogMs: 60000 });
+    turn.appendPart({ id: "p1", type: "text", text: "first" });
+    await vi.advanceTimersByTimeAsync(50000); // approaching deadline
+    turn.appendPart({ id: "p2", type: "text", text: "second" });
+    await vi.advanceTimersByTimeAsync(50000); // reset by p2; total elapsed > 60s but no fire
+    // Should not have finalized yet because watchdog reset on p2
+    turn.appendPart({ id: "p3", type: "text", text: "third" });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(bot.calls.edits.length).toBeGreaterThan(0);
+    // All edits so far must be the streaming view ("_thinking…_"), never the
+    // final view — watchdog has not fired. If the watchdog had fired during
+    // those 100s, the placeholder would show the rendered final view instead.
+    for (const call of bot.calls.edits) {
+      expect(call[2]).toBe("_thinking…_");
+    }
+    vi.useRealTimers();
+  });
+
+  it("explicit finalize cancels the watchdog", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 1000, idleWatchdogMs: 60000 });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await turn.finalize();
+    const editsAfterFinalize = bot.calls.edits.length;
+    expect(editsAfterFinalize).toBeGreaterThan(0);
+    // Watchdog should be cancelled; no double-finalize
+    await vi.advanceTimersByTimeAsync(60000);
+    // No second finalize edit beyond what finalize() already did
+    expect(bot.calls.edits.length).toBe(editsAfterFinalize);
+    vi.useRealTimers();
+  });
+});

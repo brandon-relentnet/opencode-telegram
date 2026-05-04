@@ -26,6 +26,12 @@ export interface IncomingPart {
 
 export interface TurnOptions {
   throttleMs?: number;
+  /**
+   * Idle watchdog: if no `appendPart` activity arrives for this long, the
+   * Turn assumes opencode's `session.idle` event was lost (e.g. SSE stream
+   * dropped mid-turn) and self-finalizes. Default 60s. Reset on every part.
+   */
+  idleWatchdogMs?: number;
 }
 
 export class Turn {
@@ -41,6 +47,8 @@ export class Turn {
   private finalized = false;
   private inFlightEdit: Promise<void> | null = null;
   private throttleMs: number;
+  private readonly idleWatchdogMs: number;
+  private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private bot: TurnBot,
@@ -49,6 +57,7 @@ export class Turn {
     options: TurnOptions = {},
   ) {
     this.throttleMs = options.throttleMs ?? 1000;
+    this.idleWatchdogMs = options.idleWatchdogMs ?? 60_000;
     this.lastEditAt = Date.now();
   }
 
@@ -57,12 +66,14 @@ export class Turn {
     if (!this.parts.has(part.id)) this.partOrder.push(part.id);
     this.parts.set(part.id, part);
     this.scheduleEdit();
+    this.resetWatchdog();
   }
 
   async showError(error: string): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
     this.cancelTimer();
+    this.cancelWatchdog();
     await safeEdit(
       this.bot,
       this.chatId,
@@ -83,6 +94,7 @@ export class Turn {
     if (this.finalized) return;
     this.finalized = true;
     this.cancelTimer();
+    this.cancelWatchdog();
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
   }
 
@@ -90,6 +102,7 @@ export class Turn {
     if (this.finalized) return;
     this.finalized = true;
     this.cancelTimer();
+    this.cancelWatchdog();
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
 
     const text = renderFinalView(
@@ -127,6 +140,35 @@ export class Turn {
     if (this.pendingTimer) {
       clearTimeout(this.pendingTimer);
       this.pendingTimer = null;
+    }
+  }
+
+  /**
+   * Idle watchdog: defends against the stuck-on-thinking class of bug.
+   * Live opencode SSE streams sometimes drop mid-turn (observed: repeated
+   * `terminated: other side closed` reconnect storms). When that happens
+   * the `session.idle` event is emitted on the dead connection and never
+   * reaches us, so the placeholder hangs at "_thinking…_" forever.
+   *
+   * Reset on every `appendPart` so an active stream is never cut off
+   * prematurely. If no part arrives for `idleWatchdogMs`, treat the turn
+   * as silently done and self-finalize. Cleared by finalize/cancel/showError
+   * to prevent double-finalize.
+   */
+  private resetWatchdog(): void {
+    if (this.finalized) return;
+    if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
+    this.watchdogTimer = setTimeout(() => {
+      this.watchdogTimer = null;
+      if (this.finalized) return;
+      void this.finalize().catch(() => undefined);
+    }, this.idleWatchdogMs);
+  }
+
+  private cancelWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearTimeout(this.watchdogTimer);
+      this.watchdogTimer = null;
     }
   }
 
