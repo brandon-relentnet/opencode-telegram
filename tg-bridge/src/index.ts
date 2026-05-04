@@ -266,6 +266,11 @@ async function main(): Promise<void> {
   process.on("SIGTERM", stop);
 
   log.info({ workspaceRoot: config.workspaceRoot, opencodeUrl: config.opencodeUrl }, "starting");
+
+  // Register slash commands so Telegram's `/` autocomplete shows them on
+  // every device. Failure is non-fatal — commands still work via typing.
+  await registerCommands(bot, log);
+
   // `allowed_updates` MUST include "callback_query" or Telegram won't send
   // button-press events. grammy claims to auto-detect from registered
   // handlers, but in practice the auto-detection didn't fire here (button
@@ -275,6 +280,29 @@ async function main(): Promise<void> {
     drop_pending_updates: true,
     allowed_updates: ["message", "callback_query"],
   });
+}
+
+async function registerCommands(bot: Bot, log: pino.Logger): Promise<void> {
+  try {
+    await bot.api.setMyCommands([
+      { command: "help", description: "Show available commands" },
+      { command: "projects", description: "List projects (tap to switch)" },
+      { command: "switch", description: "Switch to a project" },
+      { command: "init", description: "Create a local project" },
+      { command: "initremote", description: "Create project + private GitHub repo" },
+      { command: "clone", description: "Clone a git repo into workspace" },
+      { command: "new", description: "Start a fresh session in current project" },
+      { command: "abort", description: "Cancel the current operation" },
+      { command: "status", description: "Show current chat state" },
+      { command: "model", description: "List models (tap to set)" },
+      { command: "sessions", description: "Recent sessions (tap to switch)" },
+      { command: "deploy", description: "Push + deploy current project to Coolify" },
+      { command: "pin", description: "Re-engage the pinned status message" },
+      { command: "unpin", description: "Pause auto-updates of pinned status" },
+    ]);
+  } catch (err) {
+    log.warn({ err }, "setMyCommands failed; commands still work via typing");
+  }
 }
 
 main().catch((err) => {
