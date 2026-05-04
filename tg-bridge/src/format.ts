@@ -452,6 +452,184 @@ export function renderFinalView(
   return `${summary}\n\n${body}`;
 }
 
+/**
+ * State consumed by `renderPinnedStatus` to produce the 5-line HTML status
+ * block that lives in the chat's pinned message.
+ *
+ * All optional fields render as `—` when null/undefined so the layout stays
+ * stable across "we know nothing yet" and "fully populated" states.
+ *
+ * Lines 1 and 2 always render. Line 3 (Coolify) only when `coolifyFqdn` is
+ * present. Line 4 (git) only when `ahead > 0` OR `dirty > 0`.
+ */
+export interface PinnedStatusState {
+  /** Project basename, e.g. "bltft-gold". HTML-escaped on render. */
+  projectName: string;
+  /** Current branch from `git branch --show-current`; null for non-git dirs. */
+  branch?: string | null;
+  /** Active agent mode ("build" | "plan" | "review" | …); null when unknown. */
+  agentMode?: string | null;
+  /** Full provider/model id; rendered with provider + "claude-" prefixes stripped. */
+  modelId?: string | null;
+  /** Cumulative tokens used (whatever sum the caller deems meaningful). */
+  tokensUsed?: number | null;
+  /** Model context limit from the opencode `/provider` API. */
+  contextLimit?: number | null;
+  /** Cumulative cost as integer micros (1e-6 USD). 420_000 → "$0.42". */
+  costMicros?: number | null;
+  /** Coolify FQDN; line 3 omitted entirely when absent. */
+  coolifyFqdn?: string | null;
+  /** Pre-formatted "12m ago" relative timestamp for the last deploy. */
+  lastDeployAgo?: string | null;
+  /** Commits ahead of origin (`git rev-list --count @{u}..HEAD`). */
+  ahead?: number | null;
+  /** Number of modified+untracked files; only shown on the git line when > 0. */
+  dirty?: number | null;
+}
+
+/**
+ * State consumed by `renderStreamingHeader` to produce the single-line
+ * MarkdownV2 header above the streaming view's tool list.
+ *
+ * Returns "" when `tokensCumulative` is null — on the very first turn, before
+ * any assistant message has completed, the header would be all em-dashes and
+ * adds noise instead of signal. Letting the streaming view render unchanged
+ * for the first turn matches the spec.
+ */
+export interface StreamingHeaderState {
+  modelId?: string | null;
+  agentMode?: string | null;
+  /** Cumulative session tokens; header is suppressed when null. */
+  tokensCumulative?: number | null;
+  /** Cost contributed by the in-flight turn, in micros. */
+  costThisTurnMicros?: number | null;
+}
+
+/** "—" placeholder for unknown fields in the pinned + header surfaces. */
+const EMDASH = "—";
+
+/**
+ * Format a token count for the compact pinned/streaming surfaces:
+ *   < 1_000           → exact integer ("847")
+ *   < 10_000          → one decimal place ("2.4k")
+ *   ≥ 10_000          → integer thousands ("23k", "200k")
+ *
+ * Round-half-up to match the user-facing "23.5k" example in the plan.
+ */
+function formatTokensCompact(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) {
+    // 2_350 → "2.4k" (round-half-up via Math.round on 1-decimal scale).
+    const tenths = Math.round(n / 100) / 10;
+    return `${tenths.toFixed(1)}k`;
+  }
+  return `${Math.round(n / 1000)}k`;
+}
+
+/** Format integer micros as "$0.42". Always two decimal places. */
+function formatCostMicros(micros: number): string {
+  return `$${(micros / 1_000_000).toFixed(2)}`;
+}
+
+/**
+ * Strip the `provider/` prefix and an optional leading `claude-` from a model
+ * id so it fits into the 5-line pinned status without dominating the line:
+ *
+ *   anthropic/claude-sonnet-4-5  → sonnet-4-5
+ *   openai/gpt-4o                → gpt-4o
+ *   gpt-4o                       → gpt-4o
+ */
+function shortenModelId(modelId: string): string {
+  const slashIdx = modelId.indexOf("/");
+  const tail = slashIdx >= 0 ? modelId.slice(slashIdx + 1) : modelId;
+  return tail.startsWith("claude-") ? tail.slice("claude-".length) : tail;
+}
+
+/**
+ * Render the 5-line pinned-status HTML block. See PinnedStatusState for the
+ * input contract; see the design spec (Surface 1) for the exact mockup.
+ *
+ * Layout:
+ *   🟢 <b>{project}</b> · {branch} · {mode}
+ *   {model} · {tokens}/{limit} ctx · {cost}
+ *   ✅ <a href="https://{fqdn}">{fqdn}</a> ({age})    [conditional]
+ *   🔀 {ahead} ahead of origin                        [conditional]
+ *
+ * User-controlled fields (project, branch, fqdn) are HTML-escaped to keep
+ * Telegram's parser happy when names contain `<`, `&`, or `>`.
+ */
+export function renderPinnedStatus(state: PinnedStatusState): string {
+  const lines: string[] = [];
+
+  // Line 1: project · branch · mode (always).
+  const projectHtml = `<b>${escapeHtml(state.projectName)}</b>`;
+  const branchHtml = state.branch ? escapeHtml(state.branch) : EMDASH;
+  const modeHtml = state.agentMode ? escapeHtml(state.agentMode) : EMDASH;
+  lines.push(`🟢 ${projectHtml} · ${branchHtml} · ${modeHtml}`);
+
+  // Line 2: model · tokens/limit ctx · cost (always).
+  const modelStr = state.modelId ? escapeHtml(shortenModelId(state.modelId)) : EMDASH;
+  const tokensStr =
+    typeof state.tokensUsed === "number" ? formatTokensCompact(state.tokensUsed) : EMDASH;
+  const limitStr =
+    typeof state.contextLimit === "number" ? formatTokensCompact(state.contextLimit) : EMDASH;
+  const costStr =
+    typeof state.costMicros === "number" ? formatCostMicros(state.costMicros) : EMDASH;
+  lines.push(`${modelStr} · ${tokensStr}/${limitStr} ctx · ${costStr}`);
+
+  // Line 3: Coolify (only when fqdn present).
+  if (state.coolifyFqdn) {
+    const fqdnHtml = escapeHtml(state.coolifyFqdn);
+    const age = state.lastDeployAgo ? ` (${escapeHtml(state.lastDeployAgo)})` : "";
+    lines.push(`✅ <a href="https://${fqdnHtml}">${fqdnHtml}</a>${age}`);
+  }
+
+  // Line 4: git ahead/dirty (only when at least one is > 0).
+  const ahead = typeof state.ahead === "number" ? state.ahead : 0;
+  const dirty = typeof state.dirty === "number" ? state.dirty : 0;
+  if (ahead > 0 || dirty > 0) {
+    if (ahead > 0 && dirty > 0) {
+      lines.push(`🔀 ${ahead} ahead · ${dirty} dirty`);
+    } else if (ahead > 0) {
+      lines.push(`🔀 ${ahead} ahead of origin`);
+    } else {
+      lines.push(`🔀 ${dirty} dirty`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Render the single-line MarkdownV2 header for the streaming view, plus a
+ * "─────" separator on the next line. Returns "" when no token info is
+ * available so the streaming view renders unchanged on the first turn.
+ *
+ * Layout:
+ *   {model} · {mode} · {tokens} tokens · {cost} this turn
+ *   ─────
+ *
+ * MarkdownV2-escaped so it can be concatenated into the existing streaming
+ * view (which is also MarkdownV2). The separator characters (`─`) are not
+ * MarkdownV2-reserved.
+ */
+export function renderStreamingHeader(state: StreamingHeaderState): string {
+  if (typeof state.tokensCumulative !== "number") return "";
+
+  const model = state.modelId ? shortenModelId(state.modelId) : EMDASH;
+  const mode = state.agentMode ?? EMDASH;
+  const tokens = formatTokensCompact(state.tokensCumulative);
+  const cost =
+    typeof state.costThisTurnMicros === "number"
+      ? formatCostMicros(state.costThisTurnMicros)
+      : EMDASH;
+
+  // Build the line, then escape for MarkdownV2. The middot (·) and em-dash
+  // (—) are not in MarkdownV2's reserved set so they pass through unchanged.
+  const line = `${model} · ${mode} · ${tokens} tokens · ${cost} this turn`;
+  return `${escapeMarkdownV2(line)}\n─────`;
+}
+
 function summarizeToolInput(toolName: string, input: unknown): string {
   if (input == null || typeof input !== "object") return "";
   const obj = input as Record<string, unknown>;

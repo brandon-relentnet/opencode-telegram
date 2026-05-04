@@ -6,7 +6,11 @@ import {
   renderStreamingView,
   formatDuration,
   buildCancelKeyboard,
+  renderPinnedStatus,
+  renderStreamingHeader,
   type RenderablePart,
+  type PinnedStatusState,
+  type StreamingHeaderState,
 } from "../src/format.js";
 
 describe("escapeMarkdownV2", () => {
@@ -635,5 +639,168 @@ describe("buildCancelKeyboard", () => {
   it("embeds the sessionId verbatim in callback_data", () => {
     const kb = buildCancelKeyboard("ses_abc123");
     expect(kb.inline_keyboard[0]?.[0]?.callback_data).toBe("cancel:ses_abc123");
+  });
+});
+
+describe("renderPinnedStatus", () => {
+  const fullState: PinnedStatusState = {
+    projectName: "bltft-gold",
+    branch: "main",
+    agentMode: "build",
+    modelId: "anthropic/claude-sonnet-4-5",
+    tokensUsed: 23_000,
+    contextLimit: 200_000,
+    costMicros: 420_000,
+    coolifyFqdn: "bltft.relentnet.dev",
+    lastDeployAgo: "12m ago",
+    ahead: 3,
+    dirty: 0,
+  };
+
+  it("renders the full 4-line layout when every field is present", () => {
+    const out = renderPinnedStatus(fullState);
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toBe("🟢 <b>bltft-gold</b> · main · build");
+    expect(lines[1]).toBe("sonnet-4-5 · 23k/200k ctx · $0.42");
+    expect(lines[2]).toBe(
+      '✅ <a href="https://bltft.relentnet.dev">bltft.relentnet.dev</a> (12m ago)',
+    );
+    expect(lines[3]).toBe("🔀 3 ahead of origin");
+  });
+
+  it("omits the Coolify line when coolifyFqdn is null", () => {
+    const out = renderPinnedStatus({ ...fullState, coolifyFqdn: null });
+    expect(out).not.toContain("✅");
+    expect(out).not.toContain("bltft.relentnet.dev");
+    // Lines 1, 2, and the git line still render → 3 lines total.
+    expect(out.split("\n")).toHaveLength(3);
+  });
+
+  it("renders em-dash placeholders when token / model / cost info is missing", () => {
+    const out = renderPinnedStatus({
+      ...fullState,
+      modelId: null,
+      tokensUsed: null,
+      contextLimit: null,
+      costMicros: null,
+      coolifyFqdn: null,
+      ahead: 0,
+      dirty: 0,
+    });
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe("🟢 <b>bltft-gold</b> · main · build");
+    expect(lines[1]).toBe("— · —/— ctx · —");
+  });
+
+  it("renders both ahead and dirty on the git line when both > 0", () => {
+    const out = renderPinnedStatus({
+      ...fullState,
+      coolifyFqdn: null,
+      ahead: 3,
+      dirty: 2,
+    });
+    const lines = out.split("\n");
+    // line 0 + line 1 + git line (no coolify)
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toBe("🔀 3 ahead · 2 dirty");
+  });
+
+  it("renders only the dirty count when ahead is 0 but dirty > 0", () => {
+    const out = renderPinnedStatus({
+      ...fullState,
+      coolifyFqdn: null,
+      ahead: 0,
+      dirty: 5,
+    });
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toBe("🔀 5 dirty");
+  });
+
+  it("omits the git line entirely when ahead and dirty are both 0", () => {
+    const out = renderPinnedStatus({
+      ...fullState,
+      coolifyFqdn: null,
+      ahead: 0,
+      dirty: 0,
+    });
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(2);
+    expect(out).not.toContain("🔀");
+  });
+
+  it("renders branch as em-dash when not a git repo", () => {
+    const out = renderPinnedStatus({
+      ...fullState,
+      branch: null,
+      ahead: null,
+      dirty: null,
+      coolifyFqdn: null,
+    });
+    const lines = out.split("\n");
+    // No git line at all when ahead/dirty are null.
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe("🟢 <b>bltft-gold</b> · — · build");
+  });
+
+  it("escapes user-controlled strings (project name, branch, fqdn) as HTML", () => {
+    const out = renderPinnedStatus({
+      ...fullState,
+      projectName: "evil<&>name",
+      branch: "br<a>nch",
+      coolifyFqdn: "host&.dev",
+    });
+    expect(out).toContain("evil&lt;&amp;&gt;name");
+    expect(out).toContain("br&lt;a&gt;nch");
+    expect(out).toContain("host&amp;.dev");
+    expect(out).not.toContain("evil<&>name");
+    expect(out).not.toContain("br<a>nch");
+  });
+});
+
+describe("renderStreamingHeader", () => {
+  const fullState: StreamingHeaderState = {
+    modelId: "anthropic/claude-sonnet-4-5",
+    agentMode: "build",
+    tokensCumulative: 24_000,
+    costThisTurnMicros: 40_000,
+  };
+
+  it("renders the single-line header with separator below", () => {
+    const out = renderStreamingHeader(fullState);
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe("sonnet\\-4\\-5 · build · 24k tokens · $0\\.04 this turn");
+    expect(lines[1]).toBe("─────");
+  });
+
+  it("returns empty string when no token info is available", () => {
+    const out = renderStreamingHeader({
+      ...fullState,
+      tokensCumulative: null,
+    });
+    expect(out).toBe("");
+  });
+
+  it("renders em-dash for missing cost", () => {
+    const out = renderStreamingHeader({
+      ...fullState,
+      costThisTurnMicros: null,
+    });
+    expect(out).toContain("24k tokens");
+    expect(out).toContain("— this turn");
+  });
+
+  it("renders em-dash for missing model + agentMode", () => {
+    const out = renderStreamingHeader({
+      ...fullState,
+      modelId: null,
+      agentMode: null,
+    });
+    const lines = out.split("\n");
+    // Still renders since tokens are present.
+    expect(lines[0]).toContain("— · — · 24k tokens");
   });
 });
