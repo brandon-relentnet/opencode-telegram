@@ -19,14 +19,27 @@ interface Row {
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS chat_state (
-    chat_id              INTEGER PRIMARY KEY,
-    project_path         TEXT,
-    session_id           TEXT,
-    model                TEXT,
-    pinned_message_id    INTEGER,
-    pin_paused           INTEGER NOT NULL DEFAULT 0,
-    last_user_message_id INTEGER,
-    updated_at           INTEGER NOT NULL
+    chat_id                       INTEGER PRIMARY KEY,
+    project_path                  TEXT,
+    session_id                    TEXT,
+    model                         TEXT,
+    pinned_message_id             INTEGER,
+    pin_paused                    INTEGER NOT NULL DEFAULT 0,
+    last_user_message_id          INTEGER,
+    session_slug                  TEXT,
+    branch                        TEXT,
+    agent_mode                    TEXT,
+    cumulative_tokens_input       INTEGER NOT NULL DEFAULT 0,
+    cumulative_tokens_output      INTEGER NOT NULL DEFAULT 0,
+    cumulative_tokens_reasoning   INTEGER NOT NULL DEFAULT 0,
+    cumulative_tokens_cache_read  INTEGER NOT NULL DEFAULT 0,
+    cumulative_tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+    cumulative_cost_micros        INTEGER NOT NULL DEFAULT 0,
+    context_limit                 INTEGER,
+    session_started_at            INTEGER,
+    last_activity_at              INTEGER,
+    last_deploy_at                INTEGER,
+    updated_at                    INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS coolify_app (
     chat_id      INTEGER NOT NULL,
@@ -59,6 +72,58 @@ function migrateSchema(db: Database.Database): void {
   if (!colNames.has("last_user_message_id")) {
     db.exec("ALTER TABLE chat_state ADD COLUMN last_user_message_id INTEGER");
   }
+  // Info-density additions:
+  if (!colNames.has("session_slug")) {
+    db.exec("ALTER TABLE chat_state ADD COLUMN session_slug TEXT");
+  }
+  if (!colNames.has("branch")) {
+    db.exec("ALTER TABLE chat_state ADD COLUMN branch TEXT");
+  }
+  if (!colNames.has("agent_mode")) {
+    db.exec("ALTER TABLE chat_state ADD COLUMN agent_mode TEXT");
+  }
+  if (!colNames.has("cumulative_tokens_input")) {
+    db.exec(
+      "ALTER TABLE chat_state ADD COLUMN cumulative_tokens_input INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!colNames.has("cumulative_tokens_output")) {
+    db.exec(
+      "ALTER TABLE chat_state ADD COLUMN cumulative_tokens_output INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!colNames.has("cumulative_tokens_reasoning")) {
+    db.exec(
+      "ALTER TABLE chat_state ADD COLUMN cumulative_tokens_reasoning INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!colNames.has("cumulative_tokens_cache_read")) {
+    db.exec(
+      "ALTER TABLE chat_state ADD COLUMN cumulative_tokens_cache_read INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!colNames.has("cumulative_tokens_cache_write")) {
+    db.exec(
+      "ALTER TABLE chat_state ADD COLUMN cumulative_tokens_cache_write INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!colNames.has("cumulative_cost_micros")) {
+    db.exec(
+      "ALTER TABLE chat_state ADD COLUMN cumulative_cost_micros INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+  if (!colNames.has("context_limit")) {
+    db.exec("ALTER TABLE chat_state ADD COLUMN context_limit INTEGER");
+  }
+  if (!colNames.has("session_started_at")) {
+    db.exec("ALTER TABLE chat_state ADD COLUMN session_started_at INTEGER");
+  }
+  if (!colNames.has("last_activity_at")) {
+    db.exec("ALTER TABLE chat_state ADD COLUMN last_activity_at INTEGER");
+  }
+  if (!colNames.has("last_deploy_at")) {
+    db.exec("ALTER TABLE chat_state ADD COLUMN last_deploy_at INTEGER");
+  }
 }
 
 function rowToState(row: Row): ChatState {
@@ -87,6 +152,21 @@ export class ChatStateRepo {
   private setPausedStmt: Database.Statement;
   private getLastUserStmt: Database.Statement<[number]>;
   private setLastUserStmt: Database.Statement;
+  private getSessionSlugStmt: Database.Statement<[number]>;
+  private setSessionSlugStmt: Database.Statement;
+  private getBranchStmt: Database.Statement<[number]>;
+  private setBranchStmt: Database.Statement;
+  private getAgentModeStmt: Database.Statement<[number]>;
+  private setAgentModeStmt: Database.Statement;
+  private getCumulativeStatsStmt: Database.Statement<[number]>;
+  private incrementCumulativeStatsStmt: Database.Statement;
+  private resetCumulativeStatsStmt: Database.Statement;
+  private getContextLimitStmt: Database.Statement<[number]>;
+  private setContextLimitStmt: Database.Statement;
+  private getSessionStartedAtStmt: Database.Statement<[number]>;
+  private setSessionStartedAtStmt: Database.Statement;
+  private getLastDeployAtStmt: Database.Statement<[number]>;
+  private setLastDeployAtStmt: Database.Statement;
   private ensureRowStmt: Database.Statement;
 
   constructor(private db: Database.Database) {
@@ -150,6 +230,66 @@ export class ChatStateRepo {
     );
     this.setLastUserStmt = db.prepare(
       "UPDATE chat_state SET last_user_message_id = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.getSessionSlugStmt = db.prepare(
+      "SELECT session_slug FROM chat_state WHERE chat_id = ?",
+    );
+    this.setSessionSlugStmt = db.prepare(
+      "UPDATE chat_state SET session_slug = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.getBranchStmt = db.prepare(
+      "SELECT branch FROM chat_state WHERE chat_id = ?",
+    );
+    this.setBranchStmt = db.prepare(
+      "UPDATE chat_state SET branch = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.getAgentModeStmt = db.prepare(
+      "SELECT agent_mode FROM chat_state WHERE chat_id = ?",
+    );
+    this.setAgentModeStmt = db.prepare(
+      "UPDATE chat_state SET agent_mode = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.getCumulativeStatsStmt = db.prepare(`
+      SELECT cumulative_tokens_input, cumulative_tokens_output, cumulative_tokens_reasoning,
+             cumulative_tokens_cache_read, cumulative_tokens_cache_write, cumulative_cost_micros
+      FROM chat_state WHERE chat_id = ?
+    `);
+    this.incrementCumulativeStatsStmt = db.prepare(`
+      UPDATE chat_state SET
+        cumulative_tokens_input       = cumulative_tokens_input + @ti,
+        cumulative_tokens_output      = cumulative_tokens_output + @to,
+        cumulative_tokens_reasoning   = cumulative_tokens_reasoning + @tr,
+        cumulative_tokens_cache_read  = cumulative_tokens_cache_read + @tcr,
+        cumulative_tokens_cache_write = cumulative_tokens_cache_write + @tcw,
+        cumulative_cost_micros        = cumulative_cost_micros + @cm,
+        updated_at                    = @now
+      WHERE chat_id = @chatId
+    `);
+    this.resetCumulativeStatsStmt = db.prepare(`
+      UPDATE chat_state SET
+        cumulative_tokens_input = 0, cumulative_tokens_output = 0,
+        cumulative_tokens_reasoning = 0, cumulative_tokens_cache_read = 0,
+        cumulative_tokens_cache_write = 0, cumulative_cost_micros = 0,
+        updated_at = ?
+      WHERE chat_id = ?
+    `);
+    this.getContextLimitStmt = db.prepare(
+      "SELECT context_limit FROM chat_state WHERE chat_id = ?",
+    );
+    this.setContextLimitStmt = db.prepare(
+      "UPDATE chat_state SET context_limit = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.getSessionStartedAtStmt = db.prepare(
+      "SELECT session_started_at FROM chat_state WHERE chat_id = ?",
+    );
+    this.setSessionStartedAtStmt = db.prepare(
+      "UPDATE chat_state SET session_started_at = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.getLastDeployAtStmt = db.prepare(
+      "SELECT last_deploy_at FROM chat_state WHERE chat_id = ?",
+    );
+    this.setLastDeployAtStmt = db.prepare(
+      "UPDATE chat_state SET last_deploy_at = ?, updated_at = ? WHERE chat_id = ?",
     );
     this.ensureRowStmt = db.prepare(
       "INSERT OR IGNORE INTO chat_state (chat_id, updated_at) VALUES (?, ?)",
@@ -274,6 +414,175 @@ export class ChatStateRepo {
   setLastUserMessageId(chatId: number, messageId: number): void {
     this.ensureRow(chatId);
     this.setLastUserStmt.run(messageId, Date.now(), chatId);
+  }
+
+  /**
+   * opencode-assigned slug for the current session (e.g. "clever-meadow").
+   * Used to identify sessions in the UI when raw IDs are too noisy.
+   */
+  getSessionSlug(chatId: number): string | null {
+    const row = this.getSessionSlugStmt.get(chatId) as
+      | { session_slug: string | null }
+      | undefined;
+    return row?.session_slug ?? null;
+  }
+
+  setSessionSlug(chatId: number, slug: string | null): void {
+    this.ensureRow(chatId);
+    this.setSessionSlugStmt.run(slug, Date.now(), chatId);
+  }
+
+  /**
+   * Current git branch of the chat's project (refreshed on pinned-status
+   * flushes). Null when the project is not a git repo or detection fails.
+   */
+  getBranch(chatId: number): string | null {
+    const row = this.getBranchStmt.get(chatId) as
+      | { branch: string | null }
+      | undefined;
+    return row?.branch ?? null;
+  }
+
+  setBranch(chatId: number, branch: string | null): void {
+    this.ensureRow(chatId);
+    this.setBranchStmt.run(branch, Date.now(), chatId);
+  }
+
+  /**
+   * Last-known opencode agent mode (e.g. "build", "plan", "review") for
+   * the current session, captured from message.created events.
+   */
+  getAgentMode(chatId: number): string | null {
+    const row = this.getAgentModeStmt.get(chatId) as
+      | { agent_mode: string | null }
+      | undefined;
+    return row?.agent_mode ?? null;
+  }
+
+  setAgentMode(chatId: number, mode: string | null): void {
+    this.ensureRow(chatId);
+    this.setAgentModeStmt.run(mode, Date.now(), chatId);
+  }
+
+  /**
+   * Cumulative token + cost counters for the current session. Returned as
+   * zeros for chats without a row so callers don't need to null-check.
+   */
+  getCumulativeStats(chatId: number): {
+    tokensInput: number;
+    tokensOutput: number;
+    tokensReasoning: number;
+    tokensCacheRead: number;
+    tokensCacheWrite: number;
+    costMicros: number;
+  } {
+    const row = this.getCumulativeStatsStmt.get(chatId) as
+      | {
+          cumulative_tokens_input: number;
+          cumulative_tokens_output: number;
+          cumulative_tokens_reasoning: number;
+          cumulative_tokens_cache_read: number;
+          cumulative_tokens_cache_write: number;
+          cumulative_cost_micros: number;
+        }
+      | undefined;
+    if (!row) {
+      return {
+        tokensInput: 0,
+        tokensOutput: 0,
+        tokensReasoning: 0,
+        tokensCacheRead: 0,
+        tokensCacheWrite: 0,
+        costMicros: 0,
+      };
+    }
+    return {
+      tokensInput: row.cumulative_tokens_input,
+      tokensOutput: row.cumulative_tokens_output,
+      tokensReasoning: row.cumulative_tokens_reasoning,
+      tokensCacheRead: row.cumulative_tokens_cache_read,
+      tokensCacheWrite: row.cumulative_tokens_cache_write,
+      costMicros: row.cumulative_cost_micros,
+    };
+  }
+
+  /**
+   * Atomically add deltas to the cumulative counters. Cost is in 1e-6 USD
+   * (micros) so we never have to sum floats.
+   */
+  incrementCumulativeStats(
+    chatId: number,
+    delta: {
+      tokensInput: number;
+      tokensOutput: number;
+      tokensReasoning: number;
+      tokensCacheRead: number;
+      tokensCacheWrite: number;
+      costMicros: number;
+    },
+  ): void {
+    this.ensureRow(chatId);
+    this.incrementCumulativeStatsStmt.run({
+      ti: delta.tokensInput,
+      to: delta.tokensOutput,
+      tr: delta.tokensReasoning,
+      tcr: delta.tokensCacheRead,
+      tcw: delta.tokensCacheWrite,
+      cm: delta.costMicros,
+      now: Date.now(),
+      chatId,
+    });
+  }
+
+  /**
+   * Zero out all cumulative counters for this chat. Called on /new and
+   * /switch so each session starts with a clean slate.
+   */
+  resetCumulativeStats(chatId: number): void {
+    this.ensureRow(chatId);
+    this.resetCumulativeStatsStmt.run(Date.now(), chatId);
+  }
+
+  /**
+   * Model context-window size (tokens) cached so /info and the pinned
+   * header can render % used without re-querying /provider every flush.
+   */
+  getContextLimit(chatId: number): number | null {
+    const row = this.getContextLimitStmt.get(chatId) as
+      | { context_limit: number | null }
+      | undefined;
+    return row?.context_limit ?? null;
+  }
+
+  setContextLimit(chatId: number, limit: number | null): void {
+    this.ensureRow(chatId);
+    this.setContextLimitStmt.run(limit, Date.now(), chatId);
+  }
+
+  /** Unix-millis timestamp of when the current session was created. */
+  getSessionStartedAt(chatId: number): number | null {
+    const row = this.getSessionStartedAtStmt.get(chatId) as
+      | { session_started_at: number | null }
+      | undefined;
+    return row?.session_started_at ?? null;
+  }
+
+  setSessionStartedAt(chatId: number, ts: number | null): void {
+    this.ensureRow(chatId);
+    this.setSessionStartedAtStmt.run(ts, Date.now(), chatId);
+  }
+
+  /** Unix-millis timestamp of the last successful /deploy for this chat. */
+  getLastDeployAt(chatId: number): number | null {
+    const row = this.getLastDeployAtStmt.get(chatId) as
+      | { last_deploy_at: number | null }
+      | undefined;
+    return row?.last_deploy_at ?? null;
+  }
+
+  setLastDeployAt(chatId: number, ts: number | null): void {
+    this.ensureRow(chatId);
+    this.setLastDeployAtStmt.run(ts, Date.now(), chatId);
   }
 
   /**

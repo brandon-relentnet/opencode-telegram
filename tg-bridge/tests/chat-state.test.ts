@@ -206,3 +206,110 @@ describe("ChatStateRepo pinned-status fields", () => {
     expect(repo.getLastUserMessageId(1)).toBeNull();
   });
 });
+
+describe("ChatStateRepo info-density fields", () => {
+  it("session_slug roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    expect(repo.getSessionSlug(1)).toBeNull();
+    repo.setSessionSlug(1, "clever-meadow");
+    expect(repo.getSessionSlug(1)).toBe("clever-meadow");
+  });
+
+  it("branch roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.setBranch(1, "feature-x");
+    expect(repo.getBranch(1)).toBe("feature-x");
+  });
+
+  it("agent_mode roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.setAgentMode(1, "build");
+    expect(repo.getAgentMode(1)).toBe("build");
+  });
+
+  it("incrementCumulativeStats accumulates", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.incrementCumulativeStats(1, {
+      tokensInput: 100, tokensOutput: 50, tokensReasoning: 10,
+      tokensCacheRead: 200, tokensCacheWrite: 0,
+      costMicros: 4_200,
+    });
+    repo.incrementCumulativeStats(1, {
+      tokensInput: 50, tokensOutput: 25, tokensReasoning: 0,
+      tokensCacheRead: 0, tokensCacheWrite: 100,
+      costMicros: 1_800,
+    });
+    const stats = repo.getCumulativeStats(1);
+    expect(stats.tokensInput).toBe(150);
+    expect(stats.tokensOutput).toBe(75);
+    expect(stats.tokensReasoning).toBe(10);
+    expect(stats.tokensCacheRead).toBe(200);
+    expect(stats.tokensCacheWrite).toBe(100);
+    expect(stats.costMicros).toBe(6_000);
+  });
+
+  it("resetCumulativeStats clears counters but preserves project state", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.setProject(1, "/workspace/x", "ses_1");
+    repo.incrementCumulativeStats(1, {
+      tokensInput: 100, tokensOutput: 50, tokensReasoning: 0,
+      tokensCacheRead: 0, tokensCacheWrite: 0, costMicros: 1000,
+    });
+    repo.resetCumulativeStats(1);
+    const stats = repo.getCumulativeStats(1);
+    expect(stats.tokensInput).toBe(0);
+    expect(stats.costMicros).toBe(0);
+    // Project state survived
+    expect(repo.get(1)?.projectPath).toBe("/workspace/x");
+  });
+
+  it("getCumulativeStats on unknown chat returns zeros", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    const stats = repo.getCumulativeStats(99);
+    expect(stats.tokensInput).toBe(0);
+    expect(stats.costMicros).toBe(0);
+  });
+
+  it("context_limit roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.setContextLimit(1, 200_000);
+    expect(repo.getContextLimit(1)).toBe(200_000);
+  });
+
+  it("session_started_at roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.setSessionStartedAt(1, 1_000_000_000_000);
+    expect(repo.getSessionStartedAt(1)).toBe(1_000_000_000_000);
+  });
+
+  it("last_deploy_at roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    repo.setLastDeployAt(1, 1_500_000_000_000);
+    expect(repo.getLastDeployAt(1)).toBe(1_500_000_000_000);
+  });
+
+  it("idempotent migration on existing DB", () => {
+    const db = new Database(":memory:");
+    new ChatStateRepo(db);
+    new ChatStateRepo(db); // second construction must not throw
+    const cols = db.prepare("PRAGMA table_info(chat_state)").all() as Array<{ name: string }>;
+    const names = new Set(cols.map((c) => c.name));
+    expect(names.has("session_slug")).toBe(true);
+    expect(names.has("branch")).toBe(true);
+    expect(names.has("agent_mode")).toBe(true);
+    expect(names.has("cumulative_tokens_input")).toBe(true);
+    expect(names.has("cumulative_cost_micros")).toBe(true);
+    expect(names.has("context_limit")).toBe(true);
+    expect(names.has("session_started_at")).toBe(true);
+    expect(names.has("last_deploy_at")).toBe(true);
+  });
+});
