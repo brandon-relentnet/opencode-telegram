@@ -344,6 +344,30 @@ describe("concatenateTextParts", () => {
   });
 });
 
+describe("concatenateTextParts user-role filtering", () => {
+  it("skips text parts marked role=user", () => {
+    const parts = [
+      { type: "text", text: "fix the navbar", role: "user" },
+      { type: "text", text: "Sure, on it.", role: "assistant" },
+    ];
+    expect(concatenateTextParts(parts)).toBe("Sure, on it\\.");
+  });
+
+  it("skips text parts whose messageID matches a user-message id", () => {
+    const parts = [
+      { type: "text", text: "fix the navbar", messageID: "msg_user_1" },
+      { type: "text", text: "Sure, on it.", messageID: "msg_assist_1" },
+    ];
+    const userIds = new Set(["msg_user_1"]);
+    expect(concatenateTextParts(parts, { userMessageIds: userIds })).toBe("Sure, on it\\.");
+  });
+
+  it("includes parts with no role/messageID metadata (safe default)", () => {
+    const parts = [{ type: "text", text: "hello" }];
+    expect(concatenateTextParts(parts)).toBe("hello");
+  });
+});
+
 describe("renderFinalView", () => {
   it("returns '_(no response)_' for empty parts", () => {
     expect(renderFinalView([])).toBe("_\\(no response\\)_");

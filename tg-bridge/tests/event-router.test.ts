@@ -451,6 +451,33 @@ describe("EventRouter — dispatch", () => {
     await runPromise;
   });
 
+  it("dispatches message.created to onMessageCreated handlers", async () => {
+    const pushable = makePushable<unknown>();
+    const client = makeClientWithStream(pushable.iterable());
+    const router = new EventRouter(client);
+    const onMessageCreated = vi.fn();
+    router.registerSession("ses_1", {
+      onPartUpdated: vi.fn(),
+      onIdle: vi.fn(),
+      onError: vi.fn(),
+      onPermissionUpdated: vi.fn(),
+      onMessageCreated,
+    });
+    const ac = new AbortController();
+    const runPromise = router.start(ac.signal, [TEST_DIR]);
+
+    const properties = { info: { id: "msg_1", sessionID: "ses_1", role: "user" } };
+    pushable.push({ type: "message.created", properties });
+    await tick();
+
+    expect(onMessageCreated).toHaveBeenCalledTimes(1);
+    expect(onMessageCreated.mock.calls[0]![0]).toEqual(properties);
+
+    ac.abort();
+    pushable.end();
+    await runPromise;
+  });
+
   it("isolates handler exceptions so dispatch loop continues past a throwing handler", async () => {
     const pushable = makePushable<unknown>();
     const client = makeClientWithStream(pushable.iterable());

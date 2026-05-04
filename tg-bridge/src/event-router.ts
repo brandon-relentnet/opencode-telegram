@@ -22,6 +22,13 @@ export interface SessionEventHandler {
   onQuestionReplied?(properties: unknown): void;
   /** Optional: handle `question.rejected`. Symmetric cleanup hook. */
   onQuestionRejected?(properties: unknown): void;
+  /**
+   * Optional: handle `message.created` events. opencode emits this when a
+   * new message (user or assistant) is created within a session. The bridge
+   * uses this to track per-session user-message IDs so it can filter the
+   * user's echoed prompt out of the assistant's final view.
+   */
+  onMessageCreated?(properties: unknown): void;
 }
 
 interface RawEvent {
@@ -191,6 +198,9 @@ export class EventRouter {
         case "question.rejected":
           handler.onQuestionRejected?.(evt.properties);
           return;
+        case "message.created":
+          handler.onMessageCreated?.(evt.properties);
+          return;
         default:
           return; // ignore other event types in Phase 1
       }
@@ -207,6 +217,11 @@ export class EventRouter {
       const part = (evt.properties as { part?: { sessionID?: string } } | undefined)?.part;
       return typeof part?.sessionID === "string" ? part.sessionID : undefined;
     }
+    if (evt.type === "message.created") {
+      // opencode wraps the message under `properties.info`; sessionID lives there.
+      const info = (evt.properties as { info?: { sessionID?: string } } | undefined)?.info;
+      return typeof info?.sessionID === "string" ? info.sessionID : undefined;
+    }
     const direct = evt.properties?.sessionID;
     return typeof direct === "string" ? direct : undefined;
   }
@@ -214,6 +229,7 @@ export class EventRouter {
   private isKnownType(type: string): boolean {
     return (
       type === "message.part.updated" ||
+      type === "message.created" ||
       type === "session.idle" ||
       type === "session.error" ||
       type === "permission.asked" ||

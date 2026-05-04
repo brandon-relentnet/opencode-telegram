@@ -259,8 +259,17 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
 
     const turn = new Turn(deps.bot, chatId, placeholderId);
     const collected: IncomingPart[] = [];
+    // Track user-role message IDs so the unparseable-reply fallback doesn't
+    // echo the deploy prompt back at the user.
+    const userMessageIds = new Set<string>();
     let unregistered = false;
     const unregister = deps.router.registerSession(session.id, {
+      onMessageCreated(msg) {
+        const m = msg as { info?: { id?: string; role?: string } };
+        if (m.info?.role === "user" && typeof m.info.id === "string") {
+          userMessageIds.add(m.info.id);
+        }
+      },
       onPartUpdated(part) {
         const p = part as IncomingPart;
         if (typeof p.id !== "string") return;
@@ -324,7 +333,7 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
             }
           } else {
             // Unparseable reply — let Turn render whatever the agent returned.
-            await turn.finalize();
+            await turn.finalize({ userMessageIds });
           }
         } catch (err) {
           deps.log?.error?.(

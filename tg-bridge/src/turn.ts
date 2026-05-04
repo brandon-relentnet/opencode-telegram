@@ -86,13 +86,16 @@ export class Turn {
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
   }
 
-  async finalize(): Promise<void> {
+  async finalize(options: { userMessageIds?: Set<string> } = {}): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
     this.cancelTimer();
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
 
-    const text = renderFinalView(this.partsArray() as unknown as readonly RenderablePart[]);
+    const text = renderFinalView(
+      this.partsArray() as unknown as readonly RenderablePart[],
+      options.userMessageIds ? { userMessageIds: options.userMessageIds } : {},
+    );
     const chunks = chunkForTelegram(text);
     const first = chunks[0];
     // renderFinalView always returns at least "_\(no response\)_" so chunks[0] should

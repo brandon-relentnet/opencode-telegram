@@ -219,9 +219,18 @@ export async function createProject(
   // Set up the streaming Turn for the placeholder.
   const turn = new Turn(deps.bot, args.chatId, args.placeholderId);
   const collectedParts: IncomingPart[] = [];
+  // Track user-role message IDs so the failure-path final view doesn't echo
+  // the deterministic prompt back at the user (see message-handler.ts).
+  const userMessageIds = new Set<string>();
 
   let unregistered = false;
   const unregister = deps.router.registerSession(oneShotSession.id, {
+    onMessageCreated(msg) {
+      const m = msg as { info?: { id?: string; role?: string } };
+      if (m.info?.role === "user" && typeof m.info.id === "string") {
+        userMessageIds.add(m.info.id);
+      }
+    },
     onPartUpdated(part) {
       const p = part as IncomingPart;
       if (typeof p.id !== "string") return;
@@ -243,7 +252,7 @@ export async function createProject(
           await performAutoSwitch(args, deps);
         } else {
           // Failure path: render the LLM's error response into the placeholder.
-          await turn.finalize();
+          await turn.finalize({ userMessageIds });
         }
       } catch (err) {
         deps.log?.error?.(

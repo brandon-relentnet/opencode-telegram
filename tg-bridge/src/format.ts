@@ -29,6 +29,23 @@ export type RenderablePart =
   | { type: "tool"; tool: string; state: ToolState }
   | { type: string; [k: string]: unknown }; // unknown variants ignored
 
+/**
+ * Loose shape used by concatenateTextParts to filter user-role parts at
+ * render time. Real callers pass IncomingPart / RenderablePart values that
+ * structurally satisfy this; tests pass object literals directly.
+ *
+ * `role` and `messageID` are optional metadata: opencode tags individual
+ * parts with neither field directly, but the bridge's per-session
+ * message-role tracker enriches its own collector before rendering.
+ */
+export interface MaybeTextPart {
+  type: string;
+  text?: string;
+  role?: string;
+  messageID?: string;
+  [k: string]: unknown;
+}
+
 const TOOL_EMOJI: Record<string, string> = {
   read: "📄",
   write: "📄",
@@ -143,18 +160,47 @@ export function renderToolSummary(parts: readonly RenderablePart[]): string {
 }
 
 /**
+ * Options for concatenateTextParts / renderFinalView.
+ *
+ * `userMessageIds` is the set of opencode message IDs known to be user-role
+ * messages. opencode's `promptAsync` creates a user message containing the
+ * prompt text BEFORE emitting events for the assistant's response, so the
+ * bridge's part collector accumulates user parts alongside assistant parts.
+ * Filtering by messageID at render time strips those user echoes from the
+ * final view.
+ */
+export interface ConcatTextOptions {
+  userMessageIds?: Set<string>;
+}
+
+/**
  * Concatenate all text parts in order, joined by "\n\n", with each part
  * escaped via escapeMarkdownV2. Empty / whitespace-only text parts are
  * skipped. Tool parts are ignored.
+ *
+ * Defense-in-depth filter for user-role parts (so the agent's reply doesn't
+ * echo the user's prompt back at them):
+ *   1. If a part has a `role` field equal to "user" (case-insensitive), skip.
+ *   2. If `options.userMessageIds` is supplied AND the part's `messageID` is
+ *      in the set, skip.
+ * Either path is sufficient. Both are needed because opencode's part shape
+ * doesn't always carry a role discriminator on individual parts; the
+ * messageID lookup is the reliable path, the role check is the safety net
+ * for object-literal callers (tests, future code paths).
  */
-export function concatenateTextParts(parts: readonly RenderablePart[]): string {
+export function concatenateTextParts(
+  parts: readonly MaybeTextPart[],
+  options: ConcatTextOptions = {},
+): string {
+  const userIds = options.userMessageIds;
   const texts: string[] = [];
   for (const p of parts) {
     if (p.type !== "text") continue;
-    const text = (p as { text?: string }).text;
-    if (typeof text !== "string") continue;
-    if (text.trim().length === 0) continue;
-    texts.push(escapeMarkdownV2(text));
+    if (typeof p.text !== "string") continue;
+    if (p.text.trim().length === 0) continue;
+    if (typeof p.role === "string" && p.role.toLowerCase() === "user") continue;
+    if (userIds && typeof p.messageID === "string" && userIds.has(p.messageID)) continue;
+    texts.push(escapeMarkdownV2(p.text));
   }
   return texts.join("\n\n");
 }
@@ -169,9 +215,12 @@ export function concatenateTextParts(parts: readonly RenderablePart[]): string {
  *   - Tools used, no text: header + "_(no response text)_"
  *   - Tools used, with text: header + body
  */
-export function renderFinalView(parts: readonly RenderablePart[]): string {
+export function renderFinalView(
+  parts: readonly RenderablePart[],
+  options: ConcatTextOptions = {},
+): string {
   const summary = renderToolSummary(parts);
-  const body = concatenateTextParts(parts);
+  const body = concatenateTextParts(parts, options);
 
   if (summary === "" && body === "") return `_${escapeMarkdownV2("(no response)")}_`;
   if (summary === "") return body;

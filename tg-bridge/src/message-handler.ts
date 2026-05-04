@@ -74,14 +74,27 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
   const sessionId = stateRow.sessionId;
   let unregistered = false;
 
+  // Track message IDs that opencode tags with role="user" so we can filter
+  // the user's echoed prompt out of the assistant's final view. opencode's
+  // promptAsync creates a user message containing the prompt text BEFORE
+  // emitting events for the assistant's response, and that user message's
+  // text parts arrive via the same `message.part.updated` stream.
+  const userMessageIds = new Set<string>();
+
   const handler: SessionEventHandler = {
+    onMessageCreated(msg) {
+      const m = msg as { info?: { id?: string; role?: string } };
+      if (m.info?.role === "user" && typeof m.info.id === "string") {
+        userMessageIds.add(m.info.id);
+      }
+    },
     onPartUpdated(part) {
       const p = part as IncomingTextPart;
       if (typeof p.id === "string") turn.appendPart(p);
     },
     async onIdle() {
       try {
-        await turn.finalize();
+        await turn.finalize({ userMessageIds });
       } catch (err) {
         deps.log?.error?.(
           { chatId, sessionId, err: describeError(err) },
