@@ -26,7 +26,7 @@ function makeFakeCtx(match: string): FakeCtx {
 function makeDeps(overrides: Partial<Parameters<typeof handleInitRemote>[1]> = {}) {
   return {
     client: {} as never,
-    state: {} as never,
+    state: { get: vi.fn(() => null) } as never,
     router: { registerSession: vi.fn(), ensureDirectory: vi.fn() } as never,
     bot: {} as never,
     workspaceRoot: "/workspace",

@@ -110,6 +110,10 @@ export async function handleClone(ctx: Context, deps: CloneDeps): Promise<void> 
         ? (placeholder as { message_id: number }).message_id
         : 0;
 
+    // Inherit chat's model — see init.ts comment.
+    const stateRow = deps.state.get(ctx.chat!.id);
+    const modelId = stateRow?.model ?? deps.defaultModel;
+
     await createProject(
       {
         chatId: ctx.chat!.id,
@@ -118,6 +122,7 @@ export async function handleClone(ctx: Context, deps: CloneDeps): Promise<void> 
         kind: "clone",
         url,
         workspaceRoot: deps.workspaceRoot,
+        modelId,
       },
       {
         client: deps.client,

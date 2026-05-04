@@ -405,7 +405,14 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
       },
     });
 
-    const model = parseModelId(deps.defaultModel);
+    // Inherit the chat's selected model so /deploy doesn't silently switch
+    // provider behind the user's back. The user reported /deploy auto-using
+    // anthropic/claude-sonnet-4-5 (the bridge default) and hitting a token
+    // ceiling on that account, even though their normal chat ran on a
+    // different provider. stateRow.model is null until the user runs /model
+    // — fall through to deps.defaultModel in that case.
+    const modelId = stateRow.model ?? deps.defaultModel;
+    const model = parseModelId(modelId);
     deps.client
       .prompt(session.id, prompt, {
         ...(model ? { model } : {}),

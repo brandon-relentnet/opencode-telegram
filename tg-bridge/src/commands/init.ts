@@ -57,6 +57,12 @@ export async function handleInit(ctx: Context, deps: InitDeps): Promise<void> {
         ? (placeholder as { message_id: number }).message_id
         : 0;
 
+    // Inherit the chat's selected model so /init doesn't silently switch
+    // provider behind the user's back. chat_state.model is null until the
+    // user runs /model — fall through to deps.defaultModel in that case.
+    const stateRow = deps.state.get(ctx.chat!.id);
+    const modelId = stateRow?.model ?? deps.defaultModel;
+
     await createProject(
       {
         chatId: ctx.chat!.id,
@@ -64,6 +70,7 @@ export async function handleInit(ctx: Context, deps: InitDeps): Promise<void> {
         name,
         kind: "init",
         workspaceRoot: deps.workspaceRoot,
+        modelId,
       },
       {
         client: deps.client,

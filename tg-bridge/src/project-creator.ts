@@ -161,6 +161,13 @@ export interface CreateProjectArgs {
   /** Required when kind === "init-remote". GitHub owner namespace. */
   owner?: string;
   workspaceRoot: string;
+  /**
+   * Optional override for the model used by the one-shot orchestration
+   * session. When omitted, falls back to `deps.defaultModel`. Pass the
+   * chat's currently-selected model from chat_state so /init/clone/initremote
+   * don't silently switch providers behind the user's back.
+   */
+  modelId?: string;
 }
 
 export interface CreateProjectDeps {
@@ -320,7 +327,7 @@ export async function createProject(
 
   // Fire-and-forget the prompt. Same pattern as message-handler: we MUST NOT
   // await, or grammy's update queue blocks until the prompt resolves.
-  const model = parseModelId(deps.defaultModel);
+  const model = parseModelId(args.modelId ?? deps.defaultModel);
   deps.client
     .prompt(oneShotSession.id, prompt, {
       ...(model ? { model } : {}),

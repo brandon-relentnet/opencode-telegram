@@ -81,6 +81,10 @@ export async function handleInitRemote(ctx: Context, deps: InitRemoteDeps): Prom
         ? (placeholder as { message_id: number }).message_id
         : 0;
 
+    // Inherit chat's model — see init.ts comment.
+    const stateRow = deps.state.get(ctx.chat!.id);
+    const modelId = stateRow?.model ?? deps.defaultModel;
+
     await createProject(
       {
         chatId: ctx.chat!.id,
@@ -89,6 +93,7 @@ export async function handleInitRemote(ctx: Context, deps: InitRemoteDeps): Prom
         kind: "init-remote",
         owner: deps.ghOwner,
         workspaceRoot: deps.workspaceRoot,
+        modelId,
       },
       {
         client: deps.client,

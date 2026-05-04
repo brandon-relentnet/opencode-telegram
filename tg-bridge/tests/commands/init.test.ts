@@ -19,7 +19,7 @@ import { makeFakeCtx } from "../helpers/fake-ctx.js";
 function makeDeps() {
   return {
     client: {} as never,
-    state: {} as never,
+    state: { get: vi.fn(() => null) } as never,
     router: {} as never,
     bot: {} as never,
     workspaceRoot: WORKSPACE_ROOT,
