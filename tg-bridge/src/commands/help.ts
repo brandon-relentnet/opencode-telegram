@@ -14,6 +14,8 @@ const RAW = [
   "/abort — abort the current running task",
   "/status — show current project, session, and model",
   "/model [providerID/modelID] — show or set the model",
+  "/pin — re-engage the pinned status message",
+  "/unpin — pause auto-updates of the pinned status",
   "/help — show this message",
   "",
   "Send any other text to talk to the agent.",

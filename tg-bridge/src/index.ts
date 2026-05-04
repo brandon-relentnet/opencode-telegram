@@ -19,6 +19,7 @@ import { handleNew } from "./commands/new.js";
 import { handleAbort } from "./commands/abort.js";
 import { handleStatus } from "./commands/status.js";
 import { handleModel } from "./commands/model.js";
+import { handlePin, handleUnpin } from "./commands/pin.js";
 import { handleTextMessage } from "./message-handler.js";
 import { PinnedStatusManager, type PinnedStatusBot } from "./pinned-status.js";
 
@@ -187,6 +188,8 @@ async function main(): Promise<void> {
   bot.command("abort", (ctx) => handleAbort(ctx, { client, state }));
   bot.command("status", (ctx) => handleStatus(ctx, { state }));
   bot.command("model", (ctx) => handleModel(ctx, modelDeps));
+  bot.command("pin", (ctx) => handlePin(ctx, { pinnedStatus }));
+  bot.command("unpin", (ctx) => handleUnpin(ctx, { pinnedStatus }));
 
   // 3) Permission + question button callbacks.
   bot.on("callback_query:data", async (ctx) => {

@@ -24,6 +24,8 @@ describe("handleHelp", () => {
       "/abort",
       "/status",
       "/model",
+      "/pin",
+      "/unpin",
       "/help",
     ]) {
       expect(HELP_TEXT).toContain(cmd);
