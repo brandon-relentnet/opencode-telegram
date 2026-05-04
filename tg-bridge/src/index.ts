@@ -21,6 +21,7 @@ import { handleStatus } from "./commands/status.js";
 import { handleModel, handleModelCallback } from "./commands/model.js";
 import { handlePin, handleUnpin } from "./commands/pin.js";
 import { handleSessions, handleSessionCallback } from "./commands/sessions.js";
+import { handleInfo } from "./commands/info.js";
 import { handleTextMessage } from "./message-handler.js";
 import { PinnedStatusManager, type PinnedStatusBot } from "./pinned-status.js";
 import { ActiveTurns } from "./active-turns.js";
@@ -200,6 +201,7 @@ async function main(): Promise<void> {
   const newDeps = { client, state, router, pinnedStatus, costTracker };
   const modelDeps = { client, state, pinnedStatus };
   const sessionsDeps = { client, state, router, pinnedStatus };
+  const infoDeps = { client, state, log };
 
   bot.command("help", (ctx: Context) => handleHelp(ctx));
   bot.command("projects", (ctx) => handleProjects(ctx, projectsDeps));
@@ -219,6 +221,7 @@ async function main(): Promise<void> {
   bot.command("pin", (ctx) => handlePin(ctx, { pinnedStatus }));
   bot.command("unpin", (ctx) => handleUnpin(ctx, { pinnedStatus }));
   bot.command("sessions", (ctx) => handleSessions(ctx, sessionsDeps));
+  bot.command("info", (ctx) => handleInfo(ctx, infoDeps));
 
   // 3) Permission + question button callbacks.
   bot.on("callback_query:data", async (ctx) => {
@@ -277,9 +280,7 @@ async function main(): Promise<void> {
         return;
       }
       if (action === "info") {
-        // /info handler arrives in Task 8; for now log and bail so the
-        // button doesn't silently crash anything.
-        log.info({ chatId: ctx.chat?.id }, "pin:info pressed (handler pending)");
+        await handleInfo(ctx as never, infoDeps);
         return;
       }
       log.info({ action }, "unhandled pin: callback action");
