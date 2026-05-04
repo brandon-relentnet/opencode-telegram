@@ -45,18 +45,21 @@ async function main(): Promise<void> {
   // server-provided retry_after, with sane bounds so we don't stall forever.
   bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 5 }));
 
-  // Adapter for Turn: TurnBot expects a strict { parse_mode: "MarkdownV2" }
-  // options shape; bot.api accepts a wider Other<...> type, so a thin closure
-  // bridges them.
+  // Adapter for Turn: TurnBot uses a small `parse_mode?: "MarkdownV2" | "HTML"`
+  // shape (streaming view is MarkdownV2, final view is HTML); bot.api accepts
+  // a wider Other<...> type, so a thin closure bridges them.
   const turnBot = {
     editMessageText: (
       chatId: number,
       messageId: number,
       text: string,
-      opts: { parse_mode: "MarkdownV2" },
+      opts: { parse_mode?: "MarkdownV2" | "HTML" },
     ) => bot.api.editMessageText(chatId, messageId, text, opts),
-    sendMessage: (chatId: number, text: string, opts: { parse_mode: "MarkdownV2" }) =>
-      bot.api.sendMessage(chatId, text, opts),
+    sendMessage: (
+      chatId: number,
+      text: string,
+      opts: { parse_mode?: "MarkdownV2" | "HTML" },
+    ) => bot.api.sendMessage(chatId, text, opts),
   };
 
   // Adapter for PermissionService. PermissionBot's signatures use plain object

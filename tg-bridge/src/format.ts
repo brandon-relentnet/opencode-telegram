@@ -1,10 +1,20 @@
 /**
- * Render opencode message parts into a single Telegram MarkdownV2 string.
+ * Render opencode message parts into Telegram-flavored output.
  *
- * Per Telegram docs (https://core.telegram.org/bots/api#markdownv2-style):
+ * Streaming view (placeholder while the agent works) uses MarkdownV2 — a
+ * simpler, fixed character set that avoids nested-escaping headaches when
+ * tool inputs are interleaved with running-state markers.
+ *
+ * Final view (after `session.idle`) uses Telegram HTML, so the agent's
+ * CommonMark output (`**bold**`, headers, fenced code, links) renders
+ * correctly. See `markdown-to-html.ts` for the conversion.
+ *
+ * MarkdownV2 escape rules (https://core.telegram.org/bots/api#markdownv2-style):
  *   Outside code blocks, escape: _ * [ ] ( ) ~ ` > # + - = | { } . !
  *   Inside `pre` / `code`, escape only ` and \.
  */
+
+import { commonmarkToTelegramHtml, escapeHtml } from "./markdown-to-html.js";
 
 const RESERVED_RE = /[_*[\]()~`>#+\-=|{}.!\\]/g;
 const CODE_RESERVED_RE = /[\\`]/g;
@@ -206,25 +216,89 @@ export function concatenateTextParts(
 }
 
 /**
- * Render the final reply: muted summary header (if any tools used) +
- * concatenated text body (if any text present).
+ * HTML version of renderToolSummary for the final view (which uses
+ * Telegram HTML, not MarkdownV2). Returns "" if no tools are present.
+ *
+ * Tool names are lowercase ASCII identifiers from opencode, but we run
+ * them through escapeHtml defensively in case a future tool name contains
+ * one of `& < >`.
+ */
+export function renderToolSummaryHtml(parts: readonly RenderablePart[]): string {
+  const toolParts = parts.filter((p) => p.type === "tool") as Array<{
+    type: "tool";
+    tool: string;
+    state: ToolState;
+  }>;
+  if (toolParts.length === 0) return "";
+
+  const counts = new Map<string, number>();
+  let errorCount = 0;
+  for (const p of toolParts) {
+    counts.set(p.tool, (counts.get(p.tool) ?? 0) + 1);
+    if (p.state.status === "error") errorCount++;
+  }
+
+  const total = toolParts.length;
+  const totalLabel = `${total} ${total === 1 ? "tool" : "tools"}`;
+  const breakdown = Array.from(counts.entries()).map(([name, n]) => `${n} ${name}`);
+  const segments = [totalLabel, ...breakdown];
+  if (errorCount > 0) {
+    segments.push(`${errorCount} ${errorCount === 1 ? "error" : "errors"}`);
+  }
+  const inner = `used ${segments.join(" · ")}`;
+  return `<i>${escapeHtml(inner)}</i>`;
+}
+
+/**
+ * HTML version of concatenateTextParts. Each text part is converted from
+ * CommonMark to Telegram HTML via `marked` (so `**bold**`, fenced code,
+ * lists, links, etc. render correctly), then joined by blank lines.
+ *
+ * The user-role filter (role check + messageID set) is identical to the
+ * MarkdownV2 version — see that function's doc comment for the rationale.
+ */
+export function concatenateTextPartsHtml(
+  parts: readonly MaybeTextPart[],
+  options: ConcatTextOptions = {},
+): string {
+  const userIds = options.userMessageIds;
+  const texts: string[] = [];
+  for (const p of parts) {
+    if (p.type !== "text") continue;
+    if (typeof p.text !== "string") continue;
+    if (p.text.trim().length === 0) continue;
+    if (typeof p.role === "string" && p.role.toLowerCase() === "user") continue;
+    if (userIds && typeof p.messageID === "string" && userIds.has(p.messageID)) continue;
+    const html = commonmarkToTelegramHtml(p.text);
+    if (html.length > 0) texts.push(html);
+  }
+  return texts.join("\n\n");
+}
+
+/**
+ * Render the final reply as Telegram HTML: muted summary header (if any
+ * tools used) + body composed from CommonMark-to-HTML-converted text parts.
+ *
+ * Streaming view stays MarkdownV2 — only the final view uses HTML, so the
+ * agent's CommonMark formatting (bold, headers, fences, links) renders
+ * correctly while in-flight rendering retains its simpler escape rules.
  *
  * Edge cases:
- *   - No tools, with text: just the text
- *   - No tools, no text: "_(no response)_"
- *   - Tools used, no text: header + "_(no response text)_"
+ *   - No tools, with text: just the body
+ *   - No tools, no text: "<i>(no response)</i>"
+ *   - Tools used, no text: header + "<i>(no response text)</i>"
  *   - Tools used, with text: header + body
  */
 export function renderFinalView(
   parts: readonly RenderablePart[],
   options: ConcatTextOptions = {},
 ): string {
-  const summary = renderToolSummary(parts);
-  const body = concatenateTextParts(parts, options);
+  const summary = renderToolSummaryHtml(parts);
+  const body = concatenateTextPartsHtml(parts, options);
 
-  if (summary === "" && body === "") return `_${escapeMarkdownV2("(no response)")}_`;
+  if (summary === "" && body === "") return `<i>${escapeHtml("(no response)")}</i>`;
   if (summary === "") return body;
-  if (body === "") return `${summary}\n\n_${escapeMarkdownV2("(no response text)")}_`;
+  if (body === "") return `${summary}\n\n<i>${escapeHtml("(no response text)")}</i>`;
   return `${summary}\n\n${body}`;
 }
 

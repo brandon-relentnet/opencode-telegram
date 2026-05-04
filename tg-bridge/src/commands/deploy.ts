@@ -303,7 +303,14 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
               `✅ Deployed: https://${result.fqdn}`,
               ...(dashboard ? [`Coolify dashboard: ${dashboard}`] : []),
             ].join("\n");
-            await safeEdit(deps.bot, chatId, placeholderId, escapeMarkdownV2(lines), deps.log);
+            await safeEdit(
+              deps.bot,
+              chatId,
+              placeholderId,
+              escapeMarkdownV2(lines),
+              deps.log,
+              "MarkdownV2",
+            );
           } else if (result?.kind === "subsequent" && existing) {
             await turn.cancel();
             const dashboard = dashboardUrl(existing.uuid);
@@ -311,7 +318,14 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
               `✅ Redeployed: https://${existing.fqdn}`,
               ...(dashboard ? [`Coolify dashboard: ${dashboard}`] : []),
             ].join("\n");
-            await safeEdit(deps.bot, chatId, placeholderId, escapeMarkdownV2(lines), deps.log);
+            await safeEdit(
+              deps.bot,
+              chatId,
+              placeholderId,
+              escapeMarkdownV2(lines),
+              deps.log,
+              "MarkdownV2",
+            );
           } else if (result?.kind === "failed") {
             // Special case: subsequent-deploy got 404 from Coolify, meaning
             // the cached app was deleted (manually or by Coolify cleanup).
@@ -327,6 +341,7 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
                   "⚠️ The previous Coolify app was deleted. Cleared cached UUID — run /deploy again to create a fresh one.",
                 ),
                 deps.log,
+                "MarkdownV2",
               );
             } else {
               await turn.showError(result.reason);

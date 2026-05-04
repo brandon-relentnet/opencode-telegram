@@ -7,12 +7,12 @@ export interface TurnBot {
     chatId: number,
     messageId: number,
     text: string,
-    opts: { parse_mode: "MarkdownV2" },
+    opts: { parse_mode?: "MarkdownV2" | "HTML" },
   ): Promise<unknown>;
   sendMessage(
     chatId: number,
     text: string,
-    opts: { parse_mode: "MarkdownV2" },
+    opts: { parse_mode?: "MarkdownV2" | "HTML" },
   ): Promise<{ message_id: number }>;
 }
 
@@ -74,11 +74,17 @@ export class Turn {
     this.finalized = true;
     this.cancelTimer();
     this.cancelWatchdog();
+    // showError uses MarkdownV2 (matches the escaping applied to `error`).
+    // Final-view edits switched to HTML, but error placeholders are tiny
+    // single-line strings produced from MarkdownV2-escaped input — keeping
+    // them in MarkdownV2 mode avoids re-escaping into HTML.
     await safeEdit(
       this.bot,
       this.chatId,
       this.placeholderMessageId,
       `❌ ${escapeMarkdownV2(error)}`,
+      undefined,
+      "MarkdownV2",
     );
   }
 
@@ -179,7 +185,16 @@ export class Turn {
     const [first] = chunkForTelegram(text);
     if (!first) return;
     try {
-      await safeEdit(this.bot, this.chatId, this.placeholderMessageId, first);
+      // Streaming view is MarkdownV2 (italic-marker `_thinking…_` + tool
+      // lines with inline code). Final view is HTML — see finalize().
+      await safeEdit(
+        this.bot,
+        this.chatId,
+        this.placeholderMessageId,
+        first,
+        undefined,
+        "MarkdownV2",
+      );
     } finally {
       this.inFlightEdit = null;
     }

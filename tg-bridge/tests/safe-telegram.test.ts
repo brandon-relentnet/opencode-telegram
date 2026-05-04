@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { safeEdit, safeSend, stripMarkdownV2Escapes } from "../src/safe-telegram.js";
+import { safeEdit, safeSend, stripMarkdownV2Escapes, stripHtml } from "../src/safe-telegram.js";
 
 interface FakeBot {
   editMessageText: ReturnType<typeof vi.fn>;
@@ -32,11 +32,44 @@ describe("stripMarkdownV2Escapes", () => {
   });
 });
 
+describe("stripHtml", () => {
+  it("removes simple tags", () => {
+    expect(stripHtml("<b>hi</b>")).toBe("hi");
+  });
+
+  it("decodes &amp; &lt; &gt; &quot; &#39;", () => {
+    expect(stripHtml("a &amp; b &lt; c &gt; d &quot;e&quot; &#39;f&#39;")).toBe(
+      "a & b < c > d \"e\" 'f'",
+    );
+  });
+
+  it("strips link tags but keeps label", () => {
+    expect(stripHtml('See <a href="https://example.com">docs</a>.')).toBe("See docs.");
+  });
+
+  it("decodes &amp; last so encoded entities round-trip", () => {
+    // If &amp; were decoded first, "&amp;lt;" would become "&lt;" then "<".
+    // We want it to become "&lt;" (treated literally).
+    expect(stripHtml("&amp;lt;")).toBe("&lt;");
+  });
+});
+
 describe("safeEdit", () => {
-  it("calls editMessageText once with MarkdownV2 on success", async () => {
+  it("calls editMessageText once with HTML by default", async () => {
     const bot = makeBot();
-    await safeEdit(bot, 1, 50, "hello \\(world\\)");
+    await safeEdit(bot, 1, 50, "<b>hi</b>");
     expect(bot.editMessageText).toHaveBeenCalledTimes(1);
+    expect(bot.editMessageText.mock.calls[0]).toEqual([
+      1,
+      50,
+      "<b>hi</b>",
+      { parse_mode: "HTML" },
+    ]);
+  });
+
+  it("uses MarkdownV2 when caller opts in", async () => {
+    const bot = makeBot();
+    await safeEdit(bot, 1, 50, "hello \\(world\\)", undefined, "MarkdownV2");
     expect(bot.editMessageText.mock.calls[0]).toEqual([
       1,
       50,
@@ -45,20 +78,23 @@ describe("safeEdit", () => {
     ]);
   });
 
-  it("retries with plain text when MarkdownV2 fails", async () => {
+  it("retries with plain text (HTML stripped) when HTML fails", async () => {
     const bot = makeBot();
     bot.editMessageText
       .mockRejectedValueOnce(new Error("can't parse entities"))
       .mockResolvedValueOnce(undefined);
-    await safeEdit(bot, 1, 50, "broken \\(markdown");
+    await safeEdit(bot, 1, 50, "<b>broken</b>");
     expect(bot.editMessageText).toHaveBeenCalledTimes(2);
-    // Second call uses plain text (no parse_mode) and stripped content.
-    expect(bot.editMessageText.mock.calls[1]).toEqual([
-      1,
-      50,
-      "broken (markdown",
-      {},
-    ]);
+    expect(bot.editMessageText.mock.calls[1]).toEqual([1, 50, "broken", {}]);
+  });
+
+  it("retries with markdown stripped when MarkdownV2 fails", async () => {
+    const bot = makeBot();
+    bot.editMessageText
+      .mockRejectedValueOnce(new Error("can't parse entities"))
+      .mockResolvedValueOnce(undefined);
+    await safeEdit(bot, 1, 50, "broken \\(markdown", undefined, "MarkdownV2");
+    expect(bot.editMessageText.mock.calls[1]).toEqual([1, 50, "broken (markdown", {}]);
   });
 
   it("does not throw when both attempts fail; logs warning", async () => {
@@ -74,6 +110,7 @@ describe("safeEdit", () => {
       chatId: 1,
       messageId: 50,
       textLength: "anything".length,
+      parseMode: "HTML",
     });
   });
 
@@ -87,22 +124,28 @@ describe("safeEdit", () => {
 });
 
 describe("safeSend", () => {
-  it("calls sendMessage once with MarkdownV2 on success", async () => {
+  it("calls sendMessage once with HTML by default", async () => {
     const bot = makeBot();
-    const result = await safeSend(bot, 1, "hello");
+    const result = await safeSend(bot, 1, "<b>hi</b>");
     expect(bot.sendMessage).toHaveBeenCalledTimes(1);
-    expect(bot.sendMessage.mock.calls[0]).toEqual([1, "hello", { parse_mode: "MarkdownV2" }]);
+    expect(bot.sendMessage.mock.calls[0]).toEqual([1, "<b>hi</b>", { parse_mode: "HTML" }]);
     expect(result).toEqual({ message_id: 999 });
   });
 
-  it("retries with plain text when MarkdownV2 fails", async () => {
+  it("uses MarkdownV2 when caller opts in", async () => {
+    const bot = makeBot();
+    await safeSend(bot, 1, "hello", undefined, "MarkdownV2");
+    expect(bot.sendMessage.mock.calls[0]).toEqual([1, "hello", { parse_mode: "MarkdownV2" }]);
+  });
+
+  it("retries with HTML stripped when HTML fails", async () => {
     const bot = makeBot();
     bot.sendMessage
       .mockRejectedValueOnce(new Error("can't parse entities"))
       .mockResolvedValueOnce({ message_id: 1234 });
-    const result = await safeSend(bot, 1, "broken \\(markdown");
+    const result = await safeSend(bot, 1, "<b>broken</b>");
     expect(bot.sendMessage).toHaveBeenCalledTimes(2);
-    expect(bot.sendMessage.mock.calls[1]).toEqual([1, "broken (markdown", {}]);
+    expect(bot.sendMessage.mock.calls[1]).toEqual([1, "broken", {}]);
     expect(result).toEqual({ message_id: 1234 });
   });
 

@@ -323,11 +323,14 @@ async function performAutoSwitch(
   });
   deps.state.setProject(args.chatId, projectPath, session.id);
   deps.router.ensureDirectory(projectPath);
+  // buildSwitchConfirmation returns MarkdownV2-escaped text — opt in here
+  // so the HTML default in safeEdit doesn't mangle the backslashes.
   await safeEdit(
     deps.bot,
     args.chatId,
     args.placeholderId,
     buildSwitchConfirmation(args.name, projectPath, session.id),
     deps.log,
+    "MarkdownV2",
   );
 }

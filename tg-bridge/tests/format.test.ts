@@ -368,15 +368,15 @@ describe("concatenateTextParts user-role filtering", () => {
   });
 });
 
-describe("renderFinalView", () => {
-  it("returns '_(no response)_' for empty parts", () => {
-    expect(renderFinalView([])).toBe("_\\(no response\\)_");
+describe("renderFinalView (HTML output)", () => {
+  it("returns '<i>(no response)</i>' for empty parts", () => {
+    expect(renderFinalView([])).toBe("<i>(no response)</i>");
   });
 
   it("returns just text when no tools used", () => {
     expect(
       renderFinalView([{ type: "text", text: "The answer is 42." }]),
-    ).toBe("The answer is 42\\.");
+    ).toBe("The answer is 42.");
   });
 
   it("returns header + body when tools were used", () => {
@@ -385,15 +385,15 @@ describe("renderFinalView", () => {
         { type: "tool", tool: "bash", state: { status: "completed", input: { command: "pwd" } } },
         { type: "text", text: "Working dir is /workspace." },
       ]),
-    ).toBe("_used 1 tool · 1 bash_\n\nWorking dir is /workspace\\.");
+    ).toBe("<i>used 1 tool · 1 bash</i>\n\nWorking dir is /workspace.");
   });
 
-  it("returns header + '_(no response text)_' when tools used but no text", () => {
+  it("returns header + '<i>(no response text)</i>' when tools used but no text", () => {
     expect(
       renderFinalView([
         { type: "tool", tool: "bash", state: { status: "completed", input: { command: "pwd" } } },
       ]),
-    ).toBe("_used 1 tool · 1 bash_\n\n_\\(no response text\\)_");
+    ).toBe("<i>used 1 tool · 1 bash</i>\n\n<i>(no response text)</i>");
   });
 
   it("includes error count in summary header", () => {
@@ -403,7 +403,7 @@ describe("renderFinalView", () => {
         { type: "text", text: "Failed to run command." },
       ]),
     ).toBe(
-      "_used 1 tool · 1 bash · 1 error_\n\nFailed to run command\\.",
+      "<i>used 1 tool · 1 bash · 1 error</i>\n\nFailed to run command.",
     );
   });
 
@@ -419,7 +419,23 @@ describe("renderFinalView", () => {
         { type: "text", text: "It's a FastAPI app." },
       ]),
     ).toBe(
-      "_used 1 tool · 1 read_\n\nLet me check the project structure\\.\n\nIt's a FastAPI app\\.",
+      "<i>used 1 tool · 1 read</i>\n\nLet me check the project structure.\n\nIt&#39;s a FastAPI app.",
     );
+  });
+
+  it("renders CommonMark bold/code in text parts as HTML", () => {
+    expect(
+      renderFinalView([
+        { type: "text", text: "Use **bold** and `code`." },
+      ]),
+    ).toBe("Use <b>bold</b> and <code>code</code>.");
+  });
+
+  it("renders fenced code with language class", () => {
+    expect(
+      renderFinalView([
+        { type: "text", text: "```ts\nconst x = 1;\n```" },
+      ]),
+    ).toBe('<pre><code class="language-ts">const x = 1;\n</code></pre>');
   });
 });

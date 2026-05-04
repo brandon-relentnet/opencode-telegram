@@ -2,13 +2,15 @@ import type { Logger } from "pino";
 
 type SafeLogger = Partial<Pick<Logger, "warn">>;
 
+export type ParseMode = "MarkdownV2" | "HTML";
+
 /** Bot surface used by safeEdit. Matches grammy's bot.api.editMessageText shape loosely. */
 export interface SafeEditBot {
   editMessageText(
     chatId: number,
     messageId: number,
     text: string,
-    opts: { parse_mode?: "MarkdownV2" },
+    opts: { parse_mode?: ParseMode },
   ): Promise<unknown>;
 }
 
@@ -17,7 +19,7 @@ export interface SafeSendBot {
   sendMessage(
     chatId: number,
     text: string,
-    opts: { parse_mode?: "MarkdownV2" },
+    opts: { parse_mode?: ParseMode },
   ): Promise<{ message_id: number }>;
 }
 
@@ -34,9 +36,32 @@ export function stripMarkdownV2Escapes(text: string): string {
 }
 
 /**
- * Edit a Telegram message with MarkdownV2; on parse failure, retry once
- * as plain text with escapes stripped. Never throws — on persistent
- * failure, logs a warning (if logger provided) and returns.
+ * Strip HTML tags and decode the entities Telegram HTML mode produces, so
+ * a parse-failed HTML message can be re-sent as plain text. Lossy but
+ * readable — `<a href="...">label</a>` becomes just `label`.
+ */
+export function stripHtml(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function stripForMode(text: string, mode: ParseMode): string {
+  return mode === "HTML" ? stripHtml(text) : stripMarkdownV2Escapes(text);
+}
+
+/**
+ * Edit a Telegram message with the supplied parse mode (defaults to HTML
+ * since the final view now renders HTML); on parse failure, retry once as
+ * plain text with markup stripped. Never throws — on persistent failure,
+ * logs a warning (if logger provided) and returns.
+ *
+ * Callers passing MarkdownV2-escaped text MUST opt in via `parseMode:
+ * "MarkdownV2"` or the HTML parser will mangle their backslashes.
  */
 export async function safeEdit(
   bot: SafeEditBot,
@@ -44,13 +69,14 @@ export async function safeEdit(
   messageId: number,
   text: string,
   log?: SafeLogger,
+  parseMode: ParseMode = "HTML",
 ): Promise<void> {
   try {
-    await bot.editMessageText(chatId, messageId, text, { parse_mode: "MarkdownV2" });
+    await bot.editMessageText(chatId, messageId, text, { parse_mode: parseMode });
     return;
-  } catch (markdownErr) {
+  } catch (markupErr) {
     try {
-      const plain = stripMarkdownV2Escapes(text);
+      const plain = stripForMode(text, parseMode);
       await bot.editMessageText(chatId, messageId, plain, {});
       return;
     } catch (plainErr) {
@@ -59,10 +85,11 @@ export async function safeEdit(
           chatId,
           messageId,
           textLength: text.length,
-          markdownErr,
+          parseMode,
+          markupErr,
           plainErr,
         },
-        "safeEdit failed in both MarkdownV2 and plain-text mode",
+        "safeEdit failed in both markup and plain-text mode",
       );
       return;
     }
@@ -70,31 +97,33 @@ export async function safeEdit(
 }
 
 /**
- * Send a Telegram message with MarkdownV2; on parse failure, retry once
- * as plain text. Never throws — on persistent failure, logs a warning
- * and returns null.
+ * Send a Telegram message with the supplied parse mode (defaults to HTML);
+ * on parse failure, retry once as plain text. Never throws — on persistent
+ * failure, logs a warning and returns null.
  */
 export async function safeSend(
   bot: SafeSendBot,
   chatId: number,
   text: string,
   log?: SafeLogger,
+  parseMode: ParseMode = "HTML",
 ): Promise<{ message_id: number } | null> {
   try {
-    return await bot.sendMessage(chatId, text, { parse_mode: "MarkdownV2" });
-  } catch (markdownErr) {
+    return await bot.sendMessage(chatId, text, { parse_mode: parseMode });
+  } catch (markupErr) {
     try {
-      const plain = stripMarkdownV2Escapes(text);
+      const plain = stripForMode(text, parseMode);
       return await bot.sendMessage(chatId, plain, {});
     } catch (plainErr) {
       log?.warn?.(
         {
           chatId,
           textLength: text.length,
-          markdownErr,
+          parseMode,
+          markupErr,
           plainErr,
         },
-        "safeSend failed in both MarkdownV2 and plain-text mode",
+        "safeSend failed in both markup and plain-text mode",
       );
       return null;
     }

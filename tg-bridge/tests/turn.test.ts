@@ -107,8 +107,8 @@ describe("Turn", () => {
     const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
     await turn.finalize();
     expect(bot.calls.edits).toHaveLength(1);
-    // renderFinalView for empty input returns "_(no response)_" (with parens escaped per MarkdownV2).
-    expect(bot.calls.edits[0]![2]).toBe("_\\(no response\\)_");
+    // renderFinalView (HTML) returns "<i>(no response)</i>" for empty input.
+    expect(bot.calls.edits[0]![2]).toBe("<i>(no response)</i>");
   });
 
   it("finalize includes a tool summary header when tools were used", async () => {
@@ -124,7 +124,7 @@ describe("Turn", () => {
     await turn.finalize();
     expect(bot.calls.edits).toHaveLength(1);
     expect(bot.calls.edits[0]![2]).toBe(
-      "_used 1 tool · 1 bash_\n\nWorking dir is /workspace\\.",
+      "<i>used 1 tool · 1 bash</i>\n\nWorking dir is /workspace.",
     );
   });
 
@@ -233,9 +233,9 @@ describe("Turn idle watchdog", () => {
     // No more parts arrive; advance past watchdog
     await vi.advanceTimersByTimeAsync(60000);
     // Watchdog should have triggered finalize() — that produces a SECOND
-    // edit with the final view (escaped text), not the streaming placeholder.
+    // edit with the HTML final view, not the streaming placeholder.
     expect(bot.calls.edits.length).toBeGreaterThanOrEqual(2);
-    expect(bot.calls.edits[bot.calls.edits.length - 1]![2]).toBe("thinking\\.\\.\\.");
+    expect(bot.calls.edits[bot.calls.edits.length - 1]![2]).toBe("thinking...");
     // After finalize, further parts are ignored
     turn.appendPart({ id: "p2", type: "text", text: "late" });
     await vi.advanceTimersByTimeAsync(2000);
