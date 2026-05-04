@@ -167,6 +167,8 @@ export class ChatStateRepo {
   private setSessionStartedAtStmt: Database.Statement;
   private getLastDeployAtStmt: Database.Statement<[number]>;
   private setLastDeployAtStmt: Database.Statement;
+  private getLastActivityAtStmt: Database.Statement<[number]>;
+  private setLastActivityAtStmt: Database.Statement;
   private ensureRowStmt: Database.Statement;
 
   constructor(private db: Database.Database) {
@@ -290,6 +292,12 @@ export class ChatStateRepo {
     );
     this.setLastDeployAtStmt = db.prepare(
       "UPDATE chat_state SET last_deploy_at = ?, updated_at = ? WHERE chat_id = ?",
+    );
+    this.getLastActivityAtStmt = db.prepare(
+      "SELECT last_activity_at FROM chat_state WHERE chat_id = ?",
+    );
+    this.setLastActivityAtStmt = db.prepare(
+      "UPDATE chat_state SET last_activity_at = ?, updated_at = ? WHERE chat_id = ?",
     );
     this.ensureRowStmt = db.prepare(
       "INSERT OR IGNORE INTO chat_state (chat_id, updated_at) VALUES (?, ?)",
@@ -583,6 +591,24 @@ export class ChatStateRepo {
   setLastDeployAt(chatId: number, ts: number | null): void {
     this.ensureRow(chatId);
     this.setLastDeployAtStmt.run(ts, Date.now(), chatId);
+  }
+
+  /**
+   * Unix-millis timestamp of the most recent assistant or system event for
+   * this chat. Bumped on every message.created (regardless of role) so the
+   * pinned-status / /info "last activity" line always reflects the freshest
+   * signal even if the user hasn't actively driven it.
+   */
+  getLastActivityAt(chatId: number): number | null {
+    const row = this.getLastActivityAtStmt.get(chatId) as
+      | { last_activity_at: number | null }
+      | undefined;
+    return row?.last_activity_at ?? null;
+  }
+
+  setLastActivityAt(chatId: number, ts: number | null): void {
+    this.ensureRow(chatId);
+    this.setLastActivityAtStmt.run(ts, Date.now(), chatId);
   }
 
   /**

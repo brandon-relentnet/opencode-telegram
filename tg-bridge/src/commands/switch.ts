@@ -6,6 +6,8 @@ import { describeError } from "../errors.js";
 import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
 import type { PinnedStatusDeps } from "../pinned-status.js";
+import type { CostTracker } from "../cost-tracker.js";
+import { getCurrentBranch } from "../branch-info.js";
 
 export interface SwitchDeps {
   client: OpencodeClient;
@@ -24,6 +26,12 @@ export interface SwitchDeps {
    * Optional so tests that don't care about pinned status can omit it.
    */
   pinnedStatus?: PinnedStatusDeps;
+  /**
+   * Cumulative-cost tracker. /switch resets cumulative counters since the
+   * new session is by definition a fresh tab. Optional so tests can omit
+   * it; the call site falls through.
+   */
+  costTracker?: CostTracker;
 }
 
 /**
@@ -79,7 +87,7 @@ export async function handleSwitch(ctx: Context, deps: SwitchDeps): Promise<void
     return;
   }
 
-  let session: { id: string };
+  let session: Awaited<ReturnType<typeof deps.client.createSession>>;
   try {
     // Pass `directory` so opencode anchors the session to this worktree
     // (auto-creating a Project record if one doesn't exist) and so subsequent
@@ -91,13 +99,35 @@ export async function handleSwitch(ctx: Context, deps: SwitchDeps): Promise<void
     });
     return;
   }
-  deps.state.setProject(ctx.chat!.id, projectPath, session.id);
+  const chatId = ctx.chat!.id;
+  deps.state.setProject(chatId, projectPath, session.id);
+  // Persist new session metadata so pinned-status header + /info render
+  // the slug instead of the raw ID. session.slug is undefined on opencode
+  // builds that pre-date the slug field; we forward null so chat_state's
+  // column reflects "unknown" rather than a stale value.
+  deps.state.setSessionSlug(chatId, session.slug ?? null);
+  deps.state.setSessionStartedAt(chatId, session.time?.created ?? Date.now());
+  // New session = fresh cumulative counters. Reset the in-memory seen-IDs
+  // cache AND chat_state cumulative_*.
+  deps.costTracker?.reset(chatId);
+  // Refresh the cached branch since we just landed in a new project. The
+  // 5s cache makes this cheap; non-git directories return null.
+  try {
+    const branch = await getCurrentBranch(projectPath);
+    deps.state.setBranch(chatId, branch);
+  } catch {
+    // Swallow: the pinned-flush path will retry later. Better to ship the
+    // /switch reply on time than block on a flaky filesystem.
+  }
+  // Clear agent_mode until the first assistant message in the new session
+  // reveals it.
+  deps.state.setAgentMode(chatId, null);
   // Ensure the SSE subscription for this project's directory is open before
   // the user sends their first prompt. Idempotent — no-op if we're already
   // subscribed (e.g. another chat is in this project, or we hit boot-seed).
   deps.router.ensureDirectory(projectPath);
   // Pinned message: project + session changed. PSM debounces internally.
-  deps.pinnedStatus?.notifyStateChange(ctx.chat!.id);
+  deps.pinnedStatus?.notifyStateChange(chatId);
 
   await ctx.reply(buildSwitchConfirmation(arg, projectPath, session.id), {
     parse_mode: "MarkdownV2",

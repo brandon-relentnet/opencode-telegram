@@ -297,6 +297,14 @@ describe("ChatStateRepo info-density fields", () => {
     expect(repo.getLastDeployAt(1)).toBe(1_500_000_000_000);
   });
 
+  it("last_activity_at roundtrip", () => {
+    const db = new Database(":memory:");
+    const repo = new ChatStateRepo(db);
+    expect(repo.getLastActivityAt(1)).toBeNull();
+    repo.setLastActivityAt(1, 1_700_000_000_000);
+    expect(repo.getLastActivityAt(1)).toBe(1_700_000_000_000);
+  });
+
   it("idempotent migration on existing DB", () => {
     const db = new Database(":memory:");
     new ChatStateRepo(db);

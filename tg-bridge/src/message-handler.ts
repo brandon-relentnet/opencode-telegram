@@ -10,6 +10,7 @@ import type { ChatStateRepo } from "./chat-state.js";
 import type { SessionEventHandler } from "./event-router.js";
 import type { PermissionService } from "./permissions.js";
 import type { PinnedStatusDeps } from "./pinned-status.js";
+import type { CostTracker, AssistantMessageInfo } from "./cost-tracker.js";
 import { ActiveTurns } from "./active-turns.js";
 
 export interface MessageHandlerDeps {
@@ -42,6 +43,13 @@ export interface MessageHandlerDeps {
    * can omit it; the call sites no-op when undefined.
    */
   pinnedStatus?: PinnedStatusDeps;
+  /**
+   * Cumulative-cost tracker for the chat's current session. We forward
+   * each assistant message.created event whose payload has a tokens block
+   * so the chat_state.cumulative_* counters stay current. Required —
+   * tests pass a stub with `recordAssistantMessage` / `reset` methods.
+   */
+  costTracker: CostTracker;
   /**
    * Optional logger. When present, the handler logs permission-event
    * receipts and any errors that occur dispatching them. Without this,
@@ -117,9 +125,37 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
 
   const handler: SessionEventHandler = {
     onMessageCreated(msg) {
-      const m = msg as { info?: { id?: string; role?: string } };
+      const m = msg as {
+        info?: {
+          id?: string;
+          role?: string;
+          agent?: string;
+          tokens?: AssistantMessageInfo["tokens"];
+          cost?: number;
+        };
+      };
       if (m.info?.role === "user" && typeof m.info.id === "string") {
         userMessageIds.add(m.info.id);
+      }
+      if (m.info?.role === "assistant" && typeof m.info.id === "string") {
+        // Forward to CostTracker — idempotent on duplicate IDs, no-op when
+        // tokens/cost are absent (e.g. early "thinking" message before the
+        // model returns usage). Counts only into chat_state cumulative.
+        deps.costTracker.recordAssistantMessage(chatId, {
+          id: m.info.id,
+          ...(m.info.tokens ? { tokens: m.info.tokens } : {}),
+          ...(typeof m.info.cost === "number" ? { cost: m.info.cost } : {}),
+        });
+        // opencode tags each assistant message with its agent mode
+        // ("build" / "plan" / etc.). Pin this so the pinned-status header
+        // and /info reflect what mode the agent is currently in. Default
+        // to "build" when the field is absent — that's opencode's default.
+        deps.state.setAgentMode(chatId, m.info.agent ?? "build");
+      }
+      // Bump last-activity on ANY message creation (user or assistant) so
+      // the pinned/info "last activity" line reflects the freshest signal.
+      if (typeof m.info?.id === "string") {
+        deps.state.setLastActivityAt(chatId, Date.now());
       }
     },
     onPartUpdated(part) {
@@ -143,6 +179,10 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       void reactDone(deps.bot as never, chatId, userMessageId, deps.log);
       // Flip the pinned status back to Idle now that the turn finished.
       deps.pinnedStatus?.setIdle(chatId);
+      // Re-flush pinned so any branch / git state the agent mutated this
+      // turn (e.g. `git checkout -b feature-x`) surfaces immediately
+      // instead of waiting for the next user message. PSM debounces.
+      deps.pinnedStatus?.notifyStateChange(chatId);
       // Drop from the cancel registry — turn is no longer cancellable.
       ActiveTurns.delete(sessionId);
       if (!unregistered) {

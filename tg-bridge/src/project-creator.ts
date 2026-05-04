@@ -17,7 +17,9 @@ import type { ChatStateRepo } from "./chat-state.js";
 import type { SessionEventHandler } from "./event-router.js";
 import type { TurnBot } from "./turn.js";
 import type { PinnedStatusDeps } from "./pinned-status.js";
+import type { CostTracker, AssistantMessageInfo } from "./cost-tracker.js";
 import { Turn, type IncomingPart } from "./turn.js";
+import { getCurrentBranch } from "./branch-info.js";
 import { safeEdit } from "./safe-telegram.js";
 import { buildSwitchConfirmation } from "./commands/switch.js";
 import { describeError } from "./errors.js";
@@ -186,6 +188,13 @@ export interface CreateProjectDeps {
    * can omit it.
    */
   pinnedStatus?: PinnedStatusDeps;
+  /**
+   * Optional cumulative-cost tracker. Tokens spent by the one-shot
+   * orchestration session DO count toward the chat (real spend), but
+   * after a successful auto-switch we reset() since the chat now points
+   * at a brand new project + session. Optional so tests can omit it.
+   */
+  costTracker?: CostTracker;
   log?: Pick<Logger, "info" | "warn" | "error">;
 }
 
@@ -253,9 +262,28 @@ export async function createProject(
   let unregistered = false;
   const unregister = deps.router.registerSession(oneShotSession.id, {
     onMessageCreated(msg) {
-      const m = msg as { info?: { id?: string; role?: string } };
+      const m = msg as {
+        info?: {
+          id?: string;
+          role?: string;
+          agent?: string;
+          tokens?: AssistantMessageInfo["tokens"];
+          cost?: number;
+        };
+      };
       if (m.info?.role === "user" && typeof m.info.id === "string") {
         userMessageIds.add(m.info.id);
+      }
+      if (m.info?.role === "assistant" && typeof m.info.id === "string") {
+        deps.costTracker?.recordAssistantMessage(args.chatId, {
+          id: m.info.id,
+          ...(m.info.tokens ? { tokens: m.info.tokens } : {}),
+          ...(typeof m.info.cost === "number" ? { cost: m.info.cost } : {}),
+        });
+        deps.state.setAgentMode(args.chatId, m.info.agent ?? "build");
+      }
+      if (typeof m.info?.id === "string") {
+        deps.state.setLastActivityAt(args.chatId, Date.now());
       }
     },
     onPartUpdated(part) {
@@ -293,6 +321,9 @@ export async function createProject(
             args.chatId,
             `${args.kind} ${args.name} failed`,
           );
+          // Re-flush pinned so any partial git state (init may have created
+          // /workspace/<name>/.git even on subsequent failure) shows up.
+          deps.pinnedStatus?.notifyStateChange(args.chatId);
         }
       } catch (err) {
         deps.log?.error?.(
@@ -367,6 +398,32 @@ async function performAutoSwitch(
   });
   deps.state.setProject(args.chatId, projectPath, session.id);
   deps.router.ensureDirectory(projectPath);
+  // Persist the new (long-running) session's slug + started_at for /info
+  // and the pinned-status header. The one-shot orchestration session's
+  // slug is irrelevant — that session is throwaway.
+  deps.state.setSessionSlug(args.chatId, session.slug ?? null);
+  deps.state.setSessionStartedAt(
+    args.chatId,
+    session.time?.created ?? Date.now(),
+  );
+  // New chat session = fresh cumulative counters. CostTracker.reset clears
+  // both the in-memory seen-IDs cache and chat_state cumulative.
+  deps.costTracker?.reset(args.chatId);
+  // Refresh the cached branch since we just landed in a new project.
+  // getCurrentBranch is cheap (single git ref read, 5s cache) and falls
+  // through to null for non-git directories.
+  try {
+    const branch = await getCurrentBranch(projectPath);
+    deps.state.setBranch(args.chatId, branch);
+  } catch (err) {
+    deps.log?.warn?.(
+      { err, projectPath },
+      "performAutoSwitch: getCurrentBranch threw",
+    );
+  }
+  // Clear agent_mode until the first assistant message in the new session
+  // reveals it. Avoids stale "build" carrying over from prior session.
+  deps.state.setAgentMode(args.chatId, null);
   // buildSwitchConfirmation returns MarkdownV2-escaped text — opt in here
   // so the HTML default in safeEdit doesn't mangle the backslashes.
   await safeEdit(

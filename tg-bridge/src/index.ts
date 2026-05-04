@@ -24,6 +24,7 @@ import { handleSessions, handleSessionCallback } from "./commands/sessions.js";
 import { handleTextMessage } from "./message-handler.js";
 import { PinnedStatusManager, type PinnedStatusBot } from "./pinned-status.js";
 import { ActiveTurns } from "./active-turns.js";
+import { CostTracker } from "./cost-tracker.js";
 import { reactCancelled } from "./reactions.js";
 import { describeError } from "./errors.js";
 
@@ -110,6 +111,11 @@ async function main(): Promise<void> {
     { log },
   );
 
+  // CostTracker — singleton-per-process aggregator. Forwards each
+  // assistant message.created event into chat_state.cumulative_* and
+  // dedupes by message id. Reset on /new and /switch.
+  const costTracker = new CostTracker(state);
+
   // 1) Whitelist gate runs before everything else.
   bot.use(whitelistMiddleware(config.allowedUserIds));
 
@@ -136,6 +142,7 @@ async function main(): Promise<void> {
     workspaceRoot: config.workspaceRoot,
     router,
     pinnedStatus,
+    costTracker,
   };
   const cloneDeps = {
     client,
@@ -145,6 +152,7 @@ async function main(): Promise<void> {
     workspaceRoot: config.workspaceRoot,
     defaultModel: config.defaultModel,
     pinnedStatus,
+    costTracker,
     log,
   };
   const initDeps = {
@@ -155,6 +163,7 @@ async function main(): Promise<void> {
     workspaceRoot: config.workspaceRoot,
     defaultModel: config.defaultModel,
     pinnedStatus,
+    costTracker,
     log,
   };
   const initRemoteDeps = {
@@ -167,6 +176,7 @@ async function main(): Promise<void> {
     ghToken: config.ghToken,
     ghOwner: config.ghOwner,
     pinnedStatus,
+    costTracker,
     log,
   };
   const deployDeps = {
@@ -184,9 +194,10 @@ async function main(): Promise<void> {
       githubAppUuid: config.coolifyGithubAppUuid,
     },
     pinnedStatus,
+    costTracker,
     log,
   };
-  const newDeps = { client, state, router, pinnedStatus };
+  const newDeps = { client, state, router, pinnedStatus, costTracker };
   const modelDeps = { client, state, pinnedStatus };
   const sessionsDeps = { client, state, router, pinnedStatus };
 
@@ -378,6 +389,7 @@ async function main(): Promise<void> {
       bot: turnBot,
       defaultModel: config.defaultModel,
       pinnedStatus,
+      costTracker,
       log,
     });
   });

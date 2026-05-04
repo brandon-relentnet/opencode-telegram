@@ -95,6 +95,36 @@ describe("handleSwitch", () => {
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/myapp/);
   });
 
+  it("resets CostTracker + persists session slug/started_at + clears agent_mode after switching", async () => {
+    const ctx = makeFakeCtx({ chatId: 42, match: "myapp" });
+    const client = makeFakeClient({
+      // Widen the createSession mock to also return slug + time, mirroring
+      // the v1 SDK's actual response shape (Task 4).
+      createSession: vi.fn(async () => ({
+        id: "ses_new",
+        slug: "clever-meadow",
+        time: { created: 1_700_000_000_000, updated: 1_700_000_000_000 },
+      })),
+    });
+    const router = makeRouter();
+    // Pre-populate stale agent_mode so we can verify it gets cleared.
+    state.setAgentMode(42, "build");
+    const costTracker = { recordAssistantMessage: vi.fn(), reset: vi.fn() };
+    await handleSwitch(ctx as never, {
+      client,
+      state,
+      workspaceRoot,
+      router,
+      costTracker: costTracker as never,
+    });
+
+    expect(costTracker.reset).toHaveBeenCalledWith(42);
+    expect(state.getSessionSlug(42)).toBe("clever-meadow");
+    expect(state.getSessionStartedAt(42)).toBe(1_700_000_000_000);
+    // agent_mode reset to null until the next assistant message
+    expect(state.getAgentMode(42)).toBeNull();
+  });
+
   it("surfaces a friendly error when createSession fails (instead of crashing the bot)", async () => {
     const ctx = makeFakeCtx({ chatId: 42, match: "myapp" });
     const client = makeFakeClient({

@@ -59,6 +59,32 @@ describe("handleNew", () => {
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/new session/i);
   });
 
+  it("resets CostTracker + persists slug/started_at + clears agent_mode on /new", async () => {
+    state.setProject(1, "/workspace/myapp", "ses_old");
+    state.setAgentMode(1, "build");
+    const ctx = makeFakeCtx({ chatId: 1 });
+    const client = makeFakeClient({
+      createSession: vi.fn(async () => ({
+        id: "ses_new",
+        slug: "fresh-tab",
+        time: { created: 1_700_000_000_000, updated: 1_700_000_000_000 },
+      })),
+    });
+    const router = makeRouter();
+    const costTracker = { recordAssistantMessage: vi.fn(), reset: vi.fn() };
+    await handleNew(ctx as never, {
+      client,
+      state,
+      router,
+      costTracker: costTracker as never,
+    });
+
+    expect(costTracker.reset).toHaveBeenCalledWith(1);
+    expect(state.getSessionSlug(1)).toBe("fresh-tab");
+    expect(state.getSessionStartedAt(1)).toBe(1_700_000_000_000);
+    expect(state.getAgentMode(1)).toBeNull();
+  });
+
   it("surfaces a friendly error when createSession fails", async () => {
     state.setProject(1, "/workspace/myapp", "ses_old");
     const ctx = makeFakeCtx({ chatId: 1 });

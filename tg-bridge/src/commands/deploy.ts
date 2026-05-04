@@ -9,6 +9,7 @@ import type { OpencodeClient } from "../opencode-client.js";
 import type { ChatStateRepo } from "../chat-state.js";
 import type { SessionEventHandler } from "../event-router.js";
 import type { PinnedStatusDeps } from "../pinned-status.js";
+import type { CostTracker, AssistantMessageInfo } from "../cost-tracker.js";
 
 export interface CoolifyConfig {
   url: string | undefined;
@@ -35,6 +36,13 @@ export interface DeployDeps {
    * (state.setCoolifyApp), and setFailed on error paths.
    */
   pinnedStatus?: PinnedStatusDeps;
+  /**
+   * Cumulative-cost tracker. The deploy session's tokens count toward the
+   * chat's cumulative spend — this is real money and the user should see
+   * it. Required so all production wiring sites are consistent; tests
+   * pass a stub.
+   */
+  costTracker: CostTracker;
   log?: Pick<Logger, "info" | "warn" | "error">;
 }
 
@@ -278,9 +286,28 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
     let unregistered = false;
     const unregister = deps.router.registerSession(session.id, {
       onMessageCreated(msg) {
-        const m = msg as { info?: { id?: string; role?: string } };
+        const m = msg as {
+          info?: {
+            id?: string;
+            role?: string;
+            agent?: string;
+            tokens?: AssistantMessageInfo["tokens"];
+            cost?: number;
+          };
+        };
         if (m.info?.role === "user" && typeof m.info.id === "string") {
           userMessageIds.add(m.info.id);
+        }
+        if (m.info?.role === "assistant" && typeof m.info.id === "string") {
+          deps.costTracker.recordAssistantMessage(chatId, {
+            id: m.info.id,
+            ...(m.info.tokens ? { tokens: m.info.tokens } : {}),
+            ...(typeof m.info.cost === "number" ? { cost: m.info.cost } : {}),
+          });
+          deps.state.setAgentMode(chatId, m.info.agent ?? "build");
+        }
+        if (typeof m.info?.id === "string") {
+          deps.state.setLastActivityAt(chatId, Date.now());
         }
       },
       onPartUpdated(part) {
@@ -315,6 +342,10 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
             // queued setTimeout can't fire afterward and revert.
             await turn.cancel();
             deps.state.setCoolifyApp(chatId, projectPath, result.uuid, result.fqdn);
+            // Pin the deploy timestamp so /info and pinned can render
+            // "deployed 12m ago". Bumped on every success (first AND
+            // subsequent) so the line stays meaningful across redeploys.
+            deps.state.setLastDeployAt(chatId, Date.now());
             // Coolify-app row changed → pinned message gains a "Deploy" line.
             deps.pinnedStatus?.notifyStateChange(chatId);
             deps.pinnedStatus?.setIdle(chatId);
@@ -333,6 +364,10 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
             );
           } else if (result?.kind === "subsequent" && existing) {
             await turn.cancel();
+            deps.state.setLastDeployAt(chatId, Date.now());
+            // last_deploy_at changed → re-flush pinned so "deployed Xm ago"
+            // updates without waiting for the next user message.
+            deps.pinnedStatus?.notifyStateChange(chatId);
             deps.pinnedStatus?.setIdle(chatId);
             const dashboard = dashboardUrl(existing.uuid);
             const lines = [

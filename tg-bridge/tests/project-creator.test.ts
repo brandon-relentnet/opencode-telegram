@@ -324,6 +324,60 @@ describe("createProject", () => {
     expect(String(lastEdit[2])).toContain("ses\\_2");
   });
 
+  it("on auto-switch success: persists session slug + started_at + resets CostTracker", async () => {
+    const router = makeRouter();
+    // The second createSession (the long-running session for the new
+    // project) returns a slug + time. The first (one-shot) returns just
+    // an id; performAutoSwitch should pull slug/time from the SECOND.
+    let createCount = 0;
+    const client = makeClient({
+      createSession: vi.fn(async () => {
+        createCount++;
+        if (createCount === 1) {
+          return { id: `ses_${createCount}` };
+        }
+        return {
+          id: `ses_${createCount}`,
+          slug: "winter-forest",
+          time: { created: 1_700_000_000_000, updated: 1_700_000_000_000 },
+        };
+      }),
+    });
+    const bot = makeBot();
+    const state = new ChatStateRepo(new Database(":memory:"));
+    const costTracker = { recordAssistantMessage: vi.fn(), reset: vi.fn() };
+    const deps = {
+      ...makeDeps({ client, router, bot, state }),
+      costTracker: costTracker as never,
+    };
+
+    await createProject(
+      {
+        chatId: 1,
+        placeholderId: 555,
+        name: "myrepo",
+        kind: "init",
+        workspaceRoot: WORKSPACE_ROOT,
+      },
+      deps,
+    );
+
+    const handler = router.registered!;
+    handler.onPartUpdated({ id: "p1", type: "text", text: "initialized" });
+    await Promise.resolve(handler.onIdle());
+    await tick();
+
+    // CostTracker reset because the chat now points at a brand-new
+    // project + session.
+    expect(costTracker.reset).toHaveBeenCalledWith(1);
+    // Slug + started_at persisted from the long-running session, NOT the
+    // one-shot orchestration session.
+    expect(state.getSessionSlug(1)).toBe("winter-forest");
+    expect(state.getSessionStartedAt(1)).toBe(1_700_000_000_000);
+    // agent_mode cleared until first assistant message in new session.
+    expect(state.getAgentMode(1)).toBeNull();
+  });
+
   it("on failure marker: does NOT auto-switch, lets Turn.finalize render the LLM's error", async () => {
     const router = makeRouter();
     const client = makeClient();

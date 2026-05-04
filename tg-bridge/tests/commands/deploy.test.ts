@@ -29,6 +29,11 @@ function makeStateWithProject(coolifyApp: { uuid: string; fqdn: string } | null 
     })),
     getCoolifyApp: vi.fn(() => coolifyApp),
     setCoolifyApp: vi.fn(),
+    // Info-density wiring: deploy success bumps last_deploy_at; assistant
+    // message events update agent_mode + last_activity_at via deps.state.
+    setLastDeployAt: vi.fn(),
+    setAgentMode: vi.fn(),
+    setLastActivityAt: vi.fn(),
   };
 }
 
@@ -37,6 +42,9 @@ function makeStateWithoutProject() {
     get: vi.fn(() => null),
     getCoolifyApp: vi.fn(),
     setCoolifyApp: vi.fn(),
+    setLastDeployAt: vi.fn(),
+    setAgentMode: vi.fn(),
+    setLastActivityAt: vi.fn(),
   };
 }
 
@@ -85,6 +93,13 @@ function makeBot() {
   };
 }
 
+function makeCostTracker() {
+  return {
+    recordAssistantMessage: vi.fn(),
+    reset: vi.fn(),
+  };
+}
+
 const baseDeps = () => ({
   client: makeClient() as never,
   state: makeStateWithProject() as never,
@@ -99,6 +114,7 @@ const baseDeps = () => ({
     projectUuid: "prj-1",
     githubAppUuid: "gha-1",
   },
+  costTracker: makeCostTracker() as never,
 });
 
 describe("parseDeployReply", () => {

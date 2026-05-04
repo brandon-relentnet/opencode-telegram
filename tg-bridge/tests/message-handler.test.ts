@@ -5,6 +5,7 @@ import { handleTextMessage } from "../src/message-handler.js";
 import { makeFakeCtx } from "./helpers/fake-ctx.js";
 import type { OpencodeClient } from "../src/opencode-client.js";
 import type { SessionEventHandler } from "../src/event-router.js";
+import type { CostTracker } from "../src/cost-tracker.js";
 
 interface FakeRouter {
   registerSession: ReturnType<typeof vi.fn>;
@@ -54,6 +55,18 @@ function makeBot() {
 }
 
 /**
+ * Stub CostTracker dependency. message-handler forwards each assistant
+ * message.created event to recordAssistantMessage; tests that don't
+ * exercise the cost path can use this no-op stub.
+ */
+function makeCostTracker() {
+  return {
+    recordAssistantMessage: vi.fn(),
+    reset: vi.fn(),
+  } as unknown as CostTracker;
+}
+
+/**
  * Stub QuestionService dependency. The handler only calls these three
  * methods; use this when a test doesn't care about question routing.
  */
@@ -90,6 +103,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
     });
     expect(ctx.reply).toHaveBeenCalledOnce();
     expect(ctx.reply.mock.calls[0]![0]).toMatch(/\/switch/);
@@ -113,6 +127,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
     });
     expect(ctx.reply).toHaveBeenCalledOnce();
     expect(router.registerSession).toHaveBeenCalledWith("ses_a", expect.any(Object));
@@ -138,6 +153,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
     });
     expect(client.prompt).toHaveBeenCalledWith("ses_a", "hello", {
       model: { providerID: "openai", modelID: "gpt-5" },
@@ -162,6 +178,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
     });
     // Error path is asynchronous (.catch on fire-and-forget prompt) so we
     // need to let the microtask queue drain before asserting on its effects.
@@ -191,6 +208,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
     });
     await tick();
     const args = bot.editMessageText.mock.calls[0]!;
@@ -215,6 +233,7 @@ describe("handleTextMessage", () => {
       permissions: permissions as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
     });
     const handler = router.registered!;
     handler.onPermissionUpdated({ id: "p1", sessionID: "ses_a", title: "ok?", type: "bash" });
@@ -260,6 +279,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
       log,
     });
 
@@ -301,6 +321,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
     });
 
     // Race: handleTextMessage MUST resolve even though prompt is pending.
@@ -331,6 +352,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       questions,
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
     });
     const handler = router.registered!;
     expect(handler.onQuestionAsked).toBeDefined();
@@ -361,6 +383,7 @@ describe("handleTextMessage", () => {
       permissions: { sendRequest: vi.fn() } as never,
       questions,
       defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
     });
     const handler = router.registered!;
     expect(handler.onQuestionReplied).toBeDefined();
@@ -377,5 +400,71 @@ describe("handleTextMessage", () => {
       sessionID: "ses_42",
       requestID: "qst_2",
     });
+  });
+
+  it("forwards assistant message with tokens to CostTracker.recordAssistantMessage", async () => {
+    state.setProject(1, "/workspace/x", "ses_42");
+    const ctx = makeFakeCtx({ chatId: 1, text: "hi" });
+    ctx.reply.mockResolvedValue({ message_id: 999 });
+    const router = makeRouter();
+    const client = makeClient();
+    const bot = makeBot();
+    const costTracker = {
+      recordAssistantMessage: vi.fn(),
+      reset: vi.fn(),
+    } as unknown as CostTracker;
+    await handleTextMessage(ctx as never, {
+      state,
+      client,
+      router,
+      bot,
+      permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
+      defaultModel: DEFAULT_MODEL,
+      costTracker,
+    });
+    const handler = router.registered!;
+    handler.onMessageCreated!({
+      info: {
+        id: "msg_1",
+        role: "assistant",
+        agent: "build",
+        tokens: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
+        cost: 0.0042,
+      },
+    });
+    expect(costTracker.recordAssistantMessage).toHaveBeenCalledTimes(1);
+    expect(costTracker.recordAssistantMessage).toHaveBeenCalledWith(1, {
+      id: "msg_1",
+      tokens: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
+      cost: 0.0042,
+    });
+  });
+
+  it("captures agent_mode from assistant info.agent (e.g. 'plan')", async () => {
+    state.setProject(1, "/workspace/x", "ses_42");
+    const ctx = makeFakeCtx({ chatId: 1, text: "hi" });
+    ctx.reply.mockResolvedValue({ message_id: 999 });
+    const router = makeRouter();
+    const client = makeClient();
+    const bot = makeBot();
+    await handleTextMessage(ctx as never, {
+      state,
+      client,
+      router,
+      bot,
+      permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
+      defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
+    });
+    const handler = router.registered!;
+    expect(state.getAgentMode(1)).toBeNull();
+    handler.onMessageCreated!({
+      info: { id: "msg_1", role: "assistant", agent: "plan" },
+    });
+    expect(state.getAgentMode(1)).toBe("plan");
+    // last_activity_at was bumped on the same event
+    expect(state.getLastActivityAt(1)).not.toBeNull();
   });
 });
