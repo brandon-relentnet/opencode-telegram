@@ -37,6 +37,7 @@ function makeClient(promptImpl?: (...a: unknown[]) => Promise<unknown>): Opencod
     respondToQuestion: vi.fn(async () => true),
     rejectQuestion: vi.fn(async () => true),
     getSession: vi.fn(async () => ({ id: "ses_x", directory: "/workspace" })),
+    getModelContextLimit: vi.fn(async () => null),
     subscribeToEvents: vi.fn(() => (async function* () {})()),
   } as OpencodeClient;
 }

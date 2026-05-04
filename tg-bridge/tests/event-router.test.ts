@@ -71,6 +71,7 @@ function makeClientWithStream(stream: AsyncIterable<unknown>): OpencodeClient {
     respondToQuestion: vi.fn(async () => true),
     rejectQuestion: vi.fn(async () => true),
     getSession: vi.fn(async () => ({ id: "ses_x", directory: "/workspace" })),
+    getModelContextLimit: vi.fn(async () => null),
     subscribeToEvents: vi.fn(() => stream),
   } as OpencodeClient;
 }
@@ -99,6 +100,7 @@ function makeClientWithStreamMap(map: Map<string, AsyncIterable<unknown>>): Open
     respondToQuestion: vi.fn(async () => true),
     rejectQuestion: vi.fn(async () => true),
     getSession: vi.fn(async () => ({ id: "ses_x", directory: "/workspace" })),
+    getModelContextLimit: vi.fn(async () => null),
     subscribeToEvents: subscribe,
   } as OpencodeClient;
 }

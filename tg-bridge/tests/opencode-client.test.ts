@@ -482,7 +482,12 @@ describe("respondToPermission with directory", () => {
 });
 
 describe("getSession", () => {
-  it("GETs /session/{id} and returns id + directory", async () => {
+  it("GETs /session/{id} and returns id + directory + slug + time when present", async () => {
+    // The actual server response carries `slug` (e.g. "clever-meadow") and
+    // `time: { created, updated }` even though the v1 SDK Session type
+    // doesn't declare slug. The wrapper passes both through optionally so
+    // downstream consumers (pinned status, /info command) can show a
+    // human-friendly session label and session age.
     const innerFetch = vi.fn(
       async (input: unknown) => {
         const url = typeof input === "string" ? input : (input as Request).url;
@@ -493,7 +498,8 @@ describe("getSession", () => {
               directory: "/workspace/myproj",
               projectID: "proj_1",
               title: "smoke",
-              time: { created: 1, updated: 2 },
+              slug: "clever-meadow",
+              time: { created: 1_700_000_000_000, updated: 1_700_000_500_000 },
             }),
             { status: 200, headers: { "Content-Type": "application/json" } },
           );
@@ -510,10 +516,211 @@ describe("getSession", () => {
 
     const result = await client.getSession("ses_42");
 
-    expect(result).toEqual({ id: "ses_42", directory: "/workspace/myproj" });
+    expect(result).toEqual({
+      id: "ses_42",
+      directory: "/workspace/myproj",
+      slug: "clever-meadow",
+      time: { created: 1_700_000_000_000, updated: 1_700_000_500_000 },
+    });
     const call = (innerFetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
     const sentUrl =
       typeof call[0] === "string" ? new URL(call[0] as string) : new URL((call[0] as Request).url);
     expect(sentUrl.pathname).toBe("/session/ses_42");
+  });
+
+  it("omits slug + time when not in the response (back-compat)", async () => {
+    // Older opencode servers and test fixtures may not include slug/time.
+    // The wrapper must still succeed in that case — both fields are optional.
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "ses_old",
+            directory: "/workspace/legacy",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const result = await client.getSession("ses_old");
+
+    expect(result.id).toBe("ses_old");
+    expect(result.directory).toBe("/workspace/legacy");
+    expect(result.slug).toBeUndefined();
+    expect(result.time).toBeUndefined();
+  });
+});
+
+describe("createSession", () => {
+  it("returns slug + time when present in the create response", async () => {
+    // session.create returns the full Session payload (same shape as
+    // session.get). When opencode includes slug/time, we pass them through
+    // so the caller can record them in chat_state without a follow-up GET.
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "ses_new",
+            directory: "/workspace/proj",
+            projectID: "proj_1",
+            title: "untitled",
+            slug: "lucky-river",
+            time: { created: 1_700_000_000_000, updated: 1_700_000_000_000 },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const result = await client.createSession();
+
+    expect(result).toEqual({
+      id: "ses_new",
+      slug: "lucky-river",
+      time: { created: 1_700_000_000_000, updated: 1_700_000_000_000 },
+    });
+  });
+});
+
+/**
+ * /provider returns
+ *   { all: [{ id, models: { [modelId]: { limit: { context, output } } } }],
+ *     default, connected }
+ *
+ * `getModelContextLimit` looks up the provider by its `id` field in the
+ * `all` array, then reads `models[modelId].limit.context`. Returns null
+ * if any path segment is missing (different providers expose different
+ * shapes; we don't want to crash the pinned-flush over a missing model).
+ */
+describe("getModelContextLimit", () => {
+  it("returns the context limit when provider + model are present", async () => {
+    const innerFetch = vi.fn(
+      async (input: unknown) => {
+        const url = typeof input === "string" ? input : (input as Request).url;
+        if (url.includes("/provider")) {
+          return new Response(
+            JSON.stringify({
+              all: [
+                {
+                  id: "anthropic",
+                  name: "Anthropic",
+                  env: [],
+                  models: {
+                    "claude-opus-4": {
+                      id: "claude-opus-4",
+                      name: "Claude Opus 4",
+                      release_date: "2025-05-01",
+                      attachment: true,
+                      reasoning: true,
+                      temperature: true,
+                      tool_call: true,
+                      limit: { context: 200_000, output: 8_192 },
+                      options: {},
+                    },
+                  },
+                },
+              ],
+              default: {},
+              connected: ["anthropic"],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const limit = await client.getModelContextLimit("anthropic", "claude-opus-4");
+
+    expect(limit).toBe(200_000);
+  });
+
+  it("returns null when the provider is absent from the response", async () => {
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            all: [
+              {
+                id: "openai",
+                name: "OpenAI",
+                env: [],
+                models: {},
+              },
+            ],
+            default: {},
+            connected: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const limit = await client.getModelContextLimit("anthropic", "claude-opus-4");
+    expect(limit).toBeNull();
+  });
+
+  it("returns null when the provider exists but the model is absent", async () => {
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            all: [
+              {
+                id: "anthropic",
+                name: "Anthropic",
+                env: [],
+                models: {
+                  "claude-sonnet-4": {
+                    id: "claude-sonnet-4",
+                    name: "Claude Sonnet 4",
+                    release_date: "2025-04-01",
+                    attachment: true,
+                    reasoning: false,
+                    temperature: true,
+                    tool_call: true,
+                    limit: { context: 200_000, output: 8_192 },
+                    options: {},
+                  },
+                },
+              },
+            ],
+            default: {},
+            connected: ["anthropic"],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const limit = await client.getModelContextLimit("anthropic", "claude-opus-4");
+    expect(limit).toBeNull();
   });
 });

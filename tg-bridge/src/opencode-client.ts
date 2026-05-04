@@ -52,6 +52,35 @@ export interface OpencodeClientOptions {
 }
 
 /**
+ * The subset of opencode's session payload that the bridge consumes.
+ *
+ * `id` and `directory` are always present. `slug` and `time` are forwarded
+ * when opencode includes them; the v1 SDK's generated `Session` type omits
+ * `slug` (it was added server-side after the SDK was pinned), so we reach
+ * into the response with a soft cast and pass it through optionally. /info
+ * (Task 8) and the redesigned pinned status (Task 5/6) render `slug` as a
+ * human-friendly session label and `time.created` for session age.
+ */
+export interface BridgeSession {
+  id: string;
+  directory: string;
+  slug?: string;
+  time?: { created: number; updated: number };
+}
+
+/**
+ * Same shape as `BridgeSession` but without `directory` — `createSession`'s
+ * caller already has the directory it asked opencode to anchor to and only
+ * needs id/slug/time back. Splitting the type keeps the create return
+ * value tight; callers that need the full session can `getSession(id)`.
+ */
+export interface CreatedSession {
+  id: string;
+  slug?: string;
+  time?: { created: number; updated: number };
+}
+
+/**
  * Minimal interface the rest of the bridge depends on. Implemented by the
  * SDK-backed client below; can also be implemented by test fakes.
  *
@@ -69,7 +98,7 @@ export interface BridgeOpencodeClient {
   createSession(
     title?: string,
     options?: { directory?: string },
-  ): Promise<{ id: string }>;
+  ): Promise<CreatedSession>;
   abortSession(sessionId: string): Promise<boolean>;
   /**
    * List sessions, optionally scoped to a project directory.
@@ -106,7 +135,22 @@ export interface BridgeOpencodeClient {
    * The route returns the session regardless of the request's `?directory=`
    * (sessions are persisted globally), so we can call this from anywhere.
    */
-  getSession(sessionId: string): Promise<{ id: string; directory: string }>;
+  getSession(sessionId: string): Promise<BridgeSession>;
+  /**
+   * Look up a model's context-window limit by provider+model id.
+   *
+   * Calls opencode's `/provider` endpoint (which the SDK exposes as
+   * `client.provider.list()`) and walks the response to
+   * `all[providerId].models[modelId].limit.context`. Used by the redesigned
+   * pinned status (Task 5/6) to render `23k/200k ctx` and by `/info`
+   * (Task 8) for the same purpose.
+   *
+   * Returns `null` if any path segment is missing — different providers and
+   * server versions expose different shapes (e.g. an offline provider may
+   * be listed in `all` with no `models`), and we don't want to crash the
+   * pinned-flush path over a missing entry.
+   */
+  getModelContextLimit(providerId: string, modelId: string): Promise<number | null>;
   /**
    * Respond to a permission request.
    *
@@ -205,7 +249,24 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
       if (!data || typeof data.id !== "string") {
         throw new Error("createSession: unexpected response shape");
       }
-      return { id: data.id };
+      // The v1 SDK's Session type doesn't declare `slug`, but the server
+      // started returning it — read through a soft cast so we don't have
+      // to bump the SDK to v2 to access it. `time` IS in the v1 type but
+      // is also forwarded only when present.
+      const raw = data as unknown as {
+        slug?: unknown;
+        time?: { created?: unknown; updated?: unknown };
+      };
+      const result: CreatedSession = { id: data.id };
+      if (typeof raw.slug === "string") result.slug = raw.slug;
+      if (
+        raw.time &&
+        typeof raw.time.created === "number" &&
+        typeof raw.time.updated === "number"
+      ) {
+        result.time = { created: raw.time.created, updated: raw.time.updated };
+      }
+      return result;
     },
 
     async abortSession(sessionId) {
@@ -262,7 +323,51 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
       if (!data || typeof data.id !== "string" || typeof data.directory !== "string") {
         throw new Error("getSession: unexpected response shape");
       }
-      return { id: data.id, directory: data.directory };
+      const raw = data as unknown as {
+        slug?: unknown;
+        time?: { created?: unknown; updated?: unknown };
+      };
+      const result: BridgeSession = { id: data.id, directory: data.directory };
+      if (typeof raw.slug === "string") result.slug = raw.slug;
+      if (
+        raw.time &&
+        typeof raw.time.created === "number" &&
+        typeof raw.time.updated === "number"
+      ) {
+        result.time = { created: raw.time.created, updated: raw.time.updated };
+      }
+      return result;
+    },
+
+    async getModelContextLimit(providerId, modelId) {
+      // The v1 SDK's `client.provider.list()` calls GET /provider and
+      // returns `{ all: [{ id, models: { [modelId]: { limit: { context } } } }],
+      //            default, connected }`. Walk it defensively — providers
+      // vary in shape (e.g. offline custom providers may have no models map).
+      let data: unknown;
+      try {
+        const result = await client.provider.list();
+        data = result.data;
+      } catch {
+        // Network/HTTP failure — caller treats null as "unknown" and renders "—".
+        return null;
+      }
+      if (!data || typeof data !== "object") return null;
+      const all = (data as { all?: unknown }).all;
+      if (!Array.isArray(all)) return null;
+      const provider = all.find(
+        (p): p is { id: string; models?: Record<string, unknown> } =>
+          typeof p === "object" && p !== null && (p as { id?: unknown }).id === providerId,
+      );
+      if (!provider) return null;
+      const models = provider.models;
+      if (!models || typeof models !== "object") return null;
+      const model = (models as Record<string, unknown>)[modelId];
+      if (!model || typeof model !== "object") return null;
+      const limit = (model as { limit?: unknown }).limit;
+      if (!limit || typeof limit !== "object") return null;
+      const context = (limit as { context?: unknown }).context;
+      return typeof context === "number" ? context : null;
     },
 
     async respondToPermission(sessionId, permissionId, response, remember, directory) {
