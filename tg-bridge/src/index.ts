@@ -250,18 +250,14 @@ async function main(): Promise<void> {
         log.warn({ err }, "answerCallbackQuery for pin: failed");
       }
       const action = data.slice("pin:".length);
-      // The five pin: actions all re-enter existing slash-command handlers
+      // The compact 4-button row routes to existing slash-command handlers
       // using the already-built deps so the inline-keyboard path doesn't
-      // duplicate any logic.
-      if (action === "switch") {
-        await handleProjects(ctx as never, projectsDeps);
+      // duplicate any logic. `pin:info` is reserved for Task 8 (/info).
+      if (action === "sessions") {
+        await handleSessions(ctx as never, sessionsDeps);
         return;
       }
-      if (action === "new") {
-        await handleNew(ctx as never, newDeps);
-        return;
-      }
-      if (action === "models") {
+      if (action === "model") {
         await handleModel(ctx as never, modelDeps);
         return;
       }
@@ -269,8 +265,10 @@ async function main(): Promise<void> {
         await handleDeploy(ctx as never, deployDeps);
         return;
       }
-      if (action === "sessions") {
-        await handleSessions(ctx as never, sessionsDeps);
+      if (action === "info") {
+        // /info handler arrives in Task 8; for now log and bail so the
+        // button doesn't silently crash anything.
+        log.info({ chatId: ctx.chat?.id }, "pin:info pressed (handler pending)");
         return;
       }
       log.info({ action }, "unhandled pin: callback action");

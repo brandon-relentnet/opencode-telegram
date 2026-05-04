@@ -3,6 +3,22 @@ import Database from "better-sqlite3";
 import { PinnedStatusManager } from "../src/pinned-status.js";
 import { ChatStateRepo } from "../src/chat-state.js";
 
+// Mock branch-info so the PSM doesn't actually shell out to git in tests.
+// Each test resets the mocks via vi.mocked(...).mockResolvedValue(...).
+vi.mock("../src/branch-info.js", () => ({
+  getCurrentBranch: vi.fn(async () => null),
+  getGitInfo: vi.fn(async () => ({
+    branch: null,
+    status: { modified: 0, untracked: 0 },
+    ahead: 0,
+    behind: 0,
+    lastCommit: null,
+    remote: null,
+  })),
+}));
+
+import { getCurrentBranch, getGitInfo } from "../src/branch-info.js";
+
 function makeBot() {
   const sent: Array<unknown[]> = [];
   const edits: Array<unknown[]> = [];
@@ -24,6 +40,16 @@ let repo: ChatStateRepo;
 beforeEach(() => {
   const db = new Database(":memory:");
   repo = new ChatStateRepo(db);
+  // Reset branch-info mocks to "no git" defaults so each test starts clean.
+  vi.mocked(getCurrentBranch).mockResolvedValue(null);
+  vi.mocked(getGitInfo).mockResolvedValue({
+    branch: null,
+    status: { modified: 0, untracked: 0 },
+    ahead: 0,
+    behind: 0,
+    lastCommit: null,
+    remote: null,
+  });
 });
 
 describe("PinnedStatusManager", () => {
@@ -75,9 +101,6 @@ describe("PinnedStatusManager", () => {
 
   it("re-creates pinned message when edit fails (message gone)", async () => {
     const bot = makeBot();
-    // Override the first call to push the args (so bot.edits records the
-    // attempt) and then reject. mockRejectedValueOnce alone would replace
-    // the implementation entirely and skip the push.
     bot.api.editMessageText.mockImplementationOnce(async (...args: unknown[]) => {
       bot.edits.push(args);
       throw new Error("message to edit not found");
@@ -110,7 +133,7 @@ describe("PinnedStatusManager", () => {
     expect(repo.getPinPaused(1)).toBe(true);
   });
 
-  it("renders Idle status with project + session + model + deploy", async () => {
+  it("renders project + model + Coolify deploy line", async () => {
     const bot = makeBot();
     repo.setProject(1, "/workspace/site", "ses_abc");
     repo.setModel(1, "anthropic/claude-sonnet-4-5");
@@ -119,21 +142,89 @@ describe("PinnedStatusManager", () => {
     psm.setIdle(1);
     await psm.flushNow(1);
     const sentText = String(bot.sent[0]![1]);
-    expect(sentText).toContain("Idle");
-    expect(sentText).toContain("site"); // project name (last segment)
-    expect(sentText).toContain("ses_abc");
-    expect(sentText).toContain("claude-sonnet-4-5");
+    // Project basename on line 1.
+    expect(sentText).toContain("<b>site</b>");
+    // Shortened model id on line 2.
+    expect(sentText).toContain("sonnet-4-5");
+    // Coolify line 3.
     expect(sentText).toContain("site.example.com");
+    // Sessions/Model/Deploy/Info button row (no Switch project / New session).
+    const opts = bot.sent[0]![2] as { reply_markup: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } };
+    const flat = opts.reply_markup.inline_keyboard.flat();
+    const labels = flat.map((b) => b.text);
+    expect(labels).toEqual(["Sessions", "Model", "Deploy", "Info"]);
+    const cbs = flat.map((b) => b.callback_data);
+    expect(cbs).toEqual(["pin:sessions", "pin:model", "pin:deploy", "pin:info"]);
   });
 
-  it("renders Working status with detail line", async () => {
+  it("renders em-dash placeholders when project has no model/branch/tokens yet", async () => {
     const bot = makeBot();
     repo.setProject(1, "/workspace/site", "ses_abc");
     const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
     psm.setWorking(1, "fixing navbar mobile responsive");
     await psm.flushNow(1);
     const sentText = String(bot.sent[0]![1]);
-    expect(sentText).toContain("Working");
-    expect(sentText).toContain("fixing navbar");
+    // Line 1: project · — · —  (no branch, no agent mode).
+    expect(sentText).toContain("<b>site</b>");
+    expect(sentText).toContain("· — · —");
+    // Line 2: all em-dashes for unknown model + tokens + cost.
+    expect(sentText).toContain("— · —/— ctx · —");
+  });
+
+  it("shows branch on line 1 when project has a git branch", async () => {
+    vi.mocked(getCurrentBranch).mockResolvedValue("feature-x");
+    const bot = makeBot();
+    repo.setProject(1, "/workspace/site", "ses_abc");
+    repo.setAgentMode(1, "build");
+    const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
+    psm.setIdle(1);
+    await psm.flushNow(1);
+    const sentText = String(bot.sent[0]![1]);
+    const firstLine = sentText.split("\n")[0]!;
+    expect(firstLine).toBe("🟢 <b>site</b> · feature-x · build");
+    // chat_state.branch is persisted from the live read so /info can show it.
+    expect(repo.getBranch(1)).toBe("feature-x");
+  });
+
+  it("shows cumulative token usage on line 2 when chat_state has tokens", async () => {
+    const bot = makeBot();
+    repo.setProject(1, "/workspace/site", "ses_abc");
+    repo.setModel(1, "anthropic/claude-sonnet-4-5");
+    repo.setContextLimit(1, 200_000);
+    repo.incrementCumulativeStats(1, {
+      tokensInput: 20_000,
+      tokensOutput: 3_000,
+      tokensReasoning: 0,
+      tokensCacheRead: 0,
+      tokensCacheWrite: 0,
+      costMicros: 420_000,
+    });
+    const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
+    psm.setIdle(1);
+    await psm.flushNow(1);
+    const sentText = String(bot.sent[0]![1]);
+    const secondLine = sentText.split("\n")[1]!;
+    // 23k = 20k input + 3k output, /200k limit, $0.42 cost.
+    expect(secondLine).toBe("sonnet-4-5 · 23k/200k ctx · $0.42");
+  });
+
+  it("shows ahead+dirty git line when getGitInfo returns ahead > 0", async () => {
+    vi.mocked(getCurrentBranch).mockResolvedValue("main");
+    vi.mocked(getGitInfo).mockResolvedValue({
+      branch: "main",
+      status: { modified: 2, untracked: 1 },
+      ahead: 3,
+      behind: 0,
+      lastCommit: null,
+      remote: null,
+    });
+    const bot = makeBot();
+    repo.setProject(1, "/workspace/site", "ses_abc");
+    const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
+    psm.setIdle(1);
+    await psm.flushNow(1);
+    const sentText = String(bot.sent[0]![1]);
+    // Find the git line — should contain 3 ahead and 3 dirty (2+1).
+    expect(sentText).toContain("🔀 3 ahead · 3 dirty");
   });
 });

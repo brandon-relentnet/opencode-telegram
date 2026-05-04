@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
-import { escapeHtml } from "./markdown-to-html.js";
 import type { ChatStateRepo } from "./chat-state.js";
+import { getCurrentBranch, getGitInfo } from "./branch-info.js";
+import { renderPinnedStatus, type PinnedStatusState } from "./format.js";
 
 export interface PinnedStatusBot {
   api: {
@@ -140,10 +141,10 @@ export class PinnedStatusManager {
 
   private async flush(chatId: number): Promise<void> {
     if (this.repo.getPinPaused(chatId)) return;
-    const text = this.renderStatus(chatId);
+    const text = await this.renderStatus(chatId);
     const pinnedId = this.repo.getPinnedMessageId(chatId);
     if (pinnedId == null) {
-      await this.createAndPin(chatId);
+      await this.createAndPin(chatId, text);
       return;
     }
     try {
@@ -156,12 +157,12 @@ export class PinnedStatusManager {
         { err, chatId, pinnedId },
         "edit pinned status failed; recreating",
       );
-      await this.createAndPin(chatId);
+      await this.createAndPin(chatId, text);
     }
   }
 
-  private async createAndPin(chatId: number): Promise<void> {
-    const text = this.renderStatus(chatId);
+  private async createAndPin(chatId: number, prerendered?: string): Promise<void> {
+    const text = prerendered ?? (await this.renderStatus(chatId));
     let msgId: number;
     try {
       const sent = await this.bot.api.sendMessage(chatId, text, {
@@ -192,66 +193,98 @@ export class PinnedStatusManager {
     }
   }
 
-  private renderStatus(chatId: number): string {
+  /**
+   * Build the 5-line pinned-status HTML by reading chat_state and
+   * refreshing the branch + git info from disk. Branch is also persisted
+   * back to chat_state so the next `/info` invocation can render it
+   * without another shell-out.
+   */
+  private async renderStatus(chatId: number): Promise<string> {
     const row = this.repo.get(chatId);
-    const live =
-      this.live.get(chatId) ?? {
-        status: "idle" as StatusKind,
-        statusDetail: null,
-        lastActivityAt: Date.now(),
-      };
-    const projectName = row?.projectPath
-      ? row.projectPath.split("/").pop() ?? "(none)"
+    const projectPath = row?.projectPath ?? null;
+    const projectName = projectPath
+      ? projectPath.split("/").pop() ?? "(none)"
       : "(none)";
-    const sessionId = row?.sessionId ?? "(none)";
-    const model = row?.model ?? "(default)";
-    const coolify = row?.projectPath
-      ? this.repo.getCoolifyApp(chatId, row.projectPath)
+
+    // Refresh branch + git info from disk (cached 5s by branch-info).
+    // Wrapped in try/catch so a transient git failure doesn't break the
+    // pinned flush — fall through to "no git" rendering.
+    let branch: string | null = null;
+    let ahead = 0;
+    let dirty = 0;
+    if (projectPath) {
+      try {
+        branch = await getCurrentBranch(projectPath);
+        const info = await getGitInfo(projectPath);
+        ahead = info.ahead;
+        dirty = info.status.modified + info.status.untracked;
+      } catch (err) {
+        this.log?.warn?.({ err, projectPath }, "branch-info failed; rendering without git");
+      }
+      // Persist live branch so /info and other consumers can read it.
+      this.repo.setBranch(chatId, branch);
+    }
+
+    const stats = this.repo.getCumulativeStats(chatId);
+    const tokensUsed = stats.tokensInput + stats.tokensOutput;
+
+    const coolify = projectPath
+      ? this.repo.getCoolifyApp(chatId, projectPath)
       : null;
-    const elapsedMin = Math.floor((Date.now() - live.lastActivityAt) / 60000);
 
-    const statusEmoji = { idle: "🟢", working: "⏳", failed: "❌", aborted: "⏸" }[
-      live.status
-    ];
-    const statusLabel = {
-      idle: "Idle",
-      working: "Working",
-      failed: "Failed",
-      aborted: "Aborted",
-    }[live.status];
-
-    const lines: string[] = [];
-    lines.push(
-      `<b>${statusEmoji} ${statusLabel} · ${escapeHtml(projectName)}</b>`,
-    );
-    if (live.statusDetail) {
-      lines.push(`<i>${escapeHtml(live.statusDetail)}</i>`);
-    }
-    lines.push(`<i>Session</i>: <code>${escapeHtml(sessionId)}</code>`);
-    lines.push(`<i>Model</i>: <code>${escapeHtml(model)}</code>`);
-    if (coolify) {
-      lines.push(
-        `<i>Deploy</i>: ✅ <a href="https://${escapeHtml(coolify.fqdn)}">${escapeHtml(coolify.fqdn)}</a>`,
-      );
-    }
-    lines.push(
-      `<i>Last activity</i>: ${elapsedMin === 0 ? "just now" : `${elapsedMin} min ago`}`,
-    );
-    return lines.join("\n");
+    const state: PinnedStatusState = {
+      projectName,
+      branch,
+      agentMode: this.repo.getAgentMode(chatId),
+      modelId: row?.model ?? null,
+      // tokensUsed > 0 → render real number; 0 → null so the renderer shows
+      // an em-dash on the very first turn (before any assistant message).
+      tokensUsed: tokensUsed > 0 ? tokensUsed : null,
+      contextLimit: this.repo.getContextLimit(chatId),
+      // Same em-dash treatment for cost: 0 micros pre-first-turn looks like
+      // "$0.00" which is misleading on metered providers.
+      costMicros: stats.costMicros > 0 ? stats.costMicros : null,
+      coolifyFqdn: coolify?.fqdn ?? null,
+      lastDeployAgo: this.formatDeployAgo(this.repo.getLastDeployAt(chatId)),
+      ahead,
+      dirty,
+    };
+    return renderPinnedStatus(state);
   }
 
+  /**
+   * Render a "12m ago" / "2h ago" / "just now" relative timestamp from a
+   * unix-ms value, or null when the deploy time is unknown.
+   */
+  private formatDeployAgo(ts: number | null): string | null {
+    if (ts == null) return null;
+    const ageMs = Date.now() - ts;
+    if (ageMs < 60_000) return "just now";
+    const min = Math.floor(ageMs / 60_000);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const days = Math.floor(hr / 24);
+    return `${days}d ago`;
+  }
+
+  /**
+   * Compact 4-button row for the pinned message inline keyboard:
+   *   [Sessions] [Model] [Deploy] [Info]
+   *
+   * Drops [Switch project] (use Sessions with project context) and
+   * [New session] (less common — user can type /new). Adds [Info]
+   * which routes to the new /info command (Task 8).
+   */
   private buildKeyboard() {
     return {
       inline_keyboard: [
         [
-          { text: "Switch project", callback_data: "pin:switch" },
           { text: "Sessions", callback_data: "pin:sessions" },
+          { text: "Model", callback_data: "pin:model" },
+          { text: "Deploy", callback_data: "pin:deploy" },
+          { text: "Info", callback_data: "pin:info" },
         ],
-        [
-          { text: "New session", callback_data: "pin:new" },
-          { text: "Models", callback_data: "pin:models" },
-        ],
-        [{ text: "Deploy", callback_data: "pin:deploy" }],
       ],
     };
   }
