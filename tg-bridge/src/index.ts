@@ -23,6 +23,9 @@ import { handlePin, handleUnpin } from "./commands/pin.js";
 import { handleSessions, handleSessionCallback } from "./commands/sessions.js";
 import { handleTextMessage } from "./message-handler.js";
 import { PinnedStatusManager, type PinnedStatusBot } from "./pinned-status.js";
+import { ActiveTurns } from "./active-turns.js";
+import { reactCancelled } from "./reactions.js";
+import { describeError } from "./errors.js";
 
 const PERMISSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const SQLITE_PATH = process.env["SQLITE_PATH"] ?? "/data/chat-state.sqlite";
@@ -292,6 +295,51 @@ async function main(): Promise<void> {
       // the embedded provider/model ID, persists, and notifies pinned
       // status. answerCallbackQuery is handled inside the handler.
       await handleModelCallback(ctx as never, modelDeps);
+      return;
+    }
+    if (data.startsWith("cancel:")) {
+      // C2: [⏹ Cancel] button on streaming-view placeholder. Look up the
+      // active Turn by sessionId, call Turn.cancel() to stop streaming
+      // edits, then ask opencode to abort. Order matters: cancel() flips
+      // `finalized` so any in-flight or queued edit becomes a no-op,
+      // preventing the streaming view from re-stomping whatever opencode
+      // emits on its way to the abort. The user's original message gets
+      // ⏸ via reactCancelled so the chat history shows what happened.
+      const sessionId = data.slice("cancel:".length);
+      const entry = ActiveTurns.get(sessionId);
+      if (!entry) {
+        // Turn already finalized between when Telegram rendered the
+        // button and when the user tapped it. Telegram caches the
+        // keyboard for ~60s after the message edit, so this race is real.
+        try {
+          await ctx.answerCallbackQuery({ text: "Already done" });
+        } catch (err) {
+          log.warn({ err }, "answerCallbackQuery for stale cancel: failed");
+        }
+        return;
+      }
+      try {
+        await ctx.answerCallbackQuery({ text: "Cancelling…" });
+      } catch (err) {
+        log.warn({ err }, "answerCallbackQuery for cancel: failed");
+      }
+      // cancel() is idempotent and safe to await — it clears the
+      // streaming-edit timer and waits for any in-flight edit to settle.
+      await entry.turn.cancel();
+      try {
+        await client.abortSession(sessionId);
+      } catch (err) {
+        log.warn({ err: describeError(err), sessionId }, "abortSession failed during cancel");
+      }
+      // ⏸ on the user's original message — distinct from ✅ (success) and
+      // ❌ (failure). Best-effort; reactions are a UX nicety. Cast follows
+      // the same `as never` pattern message-handler uses: grammy's strict
+      // ReactionTypeEmoji union doesn't structurally match our narrow
+      // ReactionBot interface, but the runtime shape is compatible.
+      void reactCancelled(bot as never, entry.chatId, entry.userMessageId, log);
+      // Clear from the registry so subsequent taps land in the
+      // "Already done" branch above.
+      ActiveTurns.delete(sessionId);
       return;
     }
     if (data.startsWith("qst:")) {

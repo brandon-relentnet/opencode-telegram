@@ -1,4 +1,10 @@
-import { renderStreamingView, renderFinalView, escapeMarkdownV2, type RenderablePart } from "./format.js";
+import {
+  renderStreamingView,
+  renderFinalView,
+  escapeMarkdownV2,
+  buildCancelKeyboard,
+  type RenderablePart,
+} from "./format.js";
 import { chunkForTelegram } from "./chunker.js";
 import { safeEdit, safeSend } from "./safe-telegram.js";
 
@@ -7,7 +13,7 @@ export interface TurnBot {
     chatId: number,
     messageId: number,
     text: string,
-    opts: { parse_mode?: "MarkdownV2" | "HTML" },
+    opts: { parse_mode?: "MarkdownV2" | "HTML"; reply_markup?: object },
   ): Promise<unknown>;
   sendMessage(
     chatId: number,
@@ -40,6 +46,19 @@ export interface TurnOptions {
    * watchdog fires once after total silence. Default 10s.
    */
   heartbeatMs?: number;
+  /**
+   * Cancel button callback data (C2): when set, the streaming-view edits
+   * (and heartbeat ticks) attach an inline keyboard with a single
+   * "⏹ Cancel" button. Format: `cancel:<sessionId>`. The bridge's
+   * callback_query router matches the prefix to look up the active Turn
+   * and call `Turn.cancel()` + `client.abortSession()`.
+   *
+   * Final view edits (`finalize`) and error/cancel paths intentionally
+   * do NOT carry the keyboard — Telegram strips reply_markup whenever an
+   * editMessageText call omits the field, which gives us "remove button
+   * on completion" for free.
+   */
+  cancelCallbackData?: string;
 }
 
 export class Turn {
@@ -60,6 +79,12 @@ export class Turn {
   private readonly heartbeatMs: number;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private readonly startedAt: number;
+  // Stored as the sessionId only (any leading "cancel:" prefix is stripped
+  // at construction). buildCancelKeyboard re-applies the prefix so the
+  // callback data convention lives in one place. `undefined` disables the
+  // Cancel button entirely (test harnesses, /clone-style flows that own
+  // the placeholder lifecycle themselves).
+  private readonly cancelSessionId: string | undefined;
 
   constructor(
     private bot: TurnBot,
@@ -72,6 +97,7 @@ export class Turn {
     this.heartbeatMs = options.heartbeatMs ?? 10_000;
     this.startedAt = Date.now();
     this.lastEditAt = this.startedAt;
+    this.cancelSessionId = options.cancelCallbackData?.replace(/^cancel:/, "");
   }
 
   appendPart(part: IncomingPart): void {
@@ -242,6 +268,11 @@ export class Turn {
     if (text.length === 0) return;
     const [first] = chunkForTelegram(text);
     if (!first) return;
+    // C2: attach the [⏹ Cancel] inline keyboard to every streaming edit
+    // (and heartbeat tick) when a session ID was wired in.
+    const replyMarkup = this.cancelSessionId
+      ? buildCancelKeyboard(this.cancelSessionId)
+      : undefined;
     try {
       // Streaming view is MarkdownV2 (italic-marker `_thinking…_` + tool
       // lines with inline code). Final view is HTML — see finalize().
@@ -252,6 +283,7 @@ export class Turn {
         first,
         undefined,
         "MarkdownV2",
+        replyMarkup,
       );
     } finally {
       this.inFlightEdit = null;

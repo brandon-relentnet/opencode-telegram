@@ -314,3 +314,77 @@ describe("Turn heartbeat (C1)", () => {
     vi.useRealTimers();
   });
 });
+
+describe("Turn cancel button (C2)", () => {
+  it("attaches reply_markup with Cancel button when cancelCallbackData provided", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, {
+      throttleMs: 100,
+      cancelCallbackData: "cancel:ses_xyz",
+    });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await vi.advanceTimersByTimeAsync(150);
+    const lastEdit = bot.calls.edits[bot.calls.edits.length - 1];
+    const opts = lastEdit?.[3] as
+      | { reply_markup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> } }
+      | undefined;
+    const button = opts?.reply_markup?.inline_keyboard?.[0]?.[0];
+    expect(button?.callback_data).toBe("cancel:ses_xyz");
+    vi.useRealTimers();
+  });
+
+  it("does NOT attach reply_markup when cancelCallbackData is omitted", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, { throttleMs: 100 });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await vi.advanceTimersByTimeAsync(150);
+    const lastEdit = bot.calls.edits[bot.calls.edits.length - 1];
+    const opts = lastEdit?.[3] as { reply_markup?: unknown } | undefined;
+    expect(opts?.reply_markup).toBeUndefined();
+    vi.useRealTimers();
+  });
+
+  it("removes the Cancel button on finalize (final view has no reply_markup)", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, {
+      throttleMs: 100,
+      cancelCallbackData: "cancel:ses_xyz",
+    });
+    turn.appendPart({ id: "p1", type: "text", text: "done" });
+    await vi.advanceTimersByTimeAsync(150);
+    // Confirm streaming edit had reply_markup attached
+    const streamingEdit = bot.calls.edits[bot.calls.edits.length - 1];
+    const streamingOpts = streamingEdit?.[3] as { reply_markup?: unknown } | undefined;
+    expect(streamingOpts?.reply_markup).toBeDefined();
+    await turn.finalize();
+    // The final-view edit must NOT carry reply_markup (button removed).
+    const finalEdit = bot.calls.edits[bot.calls.edits.length - 1];
+    const finalOpts = finalEdit?.[3] as { reply_markup?: unknown } | undefined;
+    expect(finalOpts?.reply_markup).toBeUndefined();
+    vi.useRealTimers();
+  });
+
+  it("heartbeat ticks continue to attach the Cancel button while streaming", async () => {
+    vi.useFakeTimers();
+    const bot = makeBot();
+    const turn = new Turn(bot, 1, 50, {
+      throttleMs: 100,
+      heartbeatMs: 1000,
+      cancelCallbackData: "cancel:ses_xyz",
+    });
+    turn.appendPart({ id: "p1", type: "text", text: "x" });
+    await vi.advanceTimersByTimeAsync(150); // first throttled edit
+    await vi.advanceTimersByTimeAsync(1100); // heartbeat tick
+    const lastEdit = bot.calls.edits[bot.calls.edits.length - 1];
+    const opts = lastEdit?.[3] as
+      | { reply_markup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> } }
+      | undefined;
+    expect(opts?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data).toBe(
+      "cancel:ses_xyz",
+    );
+    vi.useRealTimers();
+  });
+});

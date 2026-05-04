@@ -10,6 +10,7 @@ import type { ChatStateRepo } from "./chat-state.js";
 import type { SessionEventHandler } from "./event-router.js";
 import type { PermissionService } from "./permissions.js";
 import type { PinnedStatusDeps } from "./pinned-status.js";
+import { ActiveTurns } from "./active-turns.js";
 
 export interface MessageHandlerDeps {
   state: ChatStateRepo;
@@ -93,8 +94,18 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       ? (placeholder as { message_id: number }).message_id
       : 0;
 
-  const turn = new Turn(deps.bot, chatId, placeholderId);
   const sessionId = stateRow.sessionId;
+  // C2: pass cancelCallbackData so every streaming-view edit attaches the
+  // [⏹ Cancel] inline keyboard. The button's callback_data is consumed
+  // by the `cancel:` route in index.ts, which looks up this Turn via the
+  // ActiveTurns registry below.
+  const turn = new Turn(deps.bot, chatId, placeholderId, {
+    cancelCallbackData: `cancel:${sessionId}`,
+  });
+  // Register the in-flight Turn so the cancel-button callback can find it.
+  // Removed from the map in every terminal branch (idle / error / prompt
+  // failure) so the registry tracks only currently-cancellable turns.
+  ActiveTurns.set(sessionId, { turn, chatId, userMessageId });
   let unregistered = false;
 
   // Track message IDs that opencode tags with role="user" so we can filter
@@ -128,6 +139,8 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       void reactDone(deps.bot as never, chatId, userMessageId, deps.log);
       // Flip the pinned status back to Idle now that the turn finished.
       deps.pinnedStatus?.setIdle(chatId);
+      // Drop from the cancel registry — turn is no longer cancellable.
+      ActiveTurns.delete(sessionId);
       if (!unregistered) {
         unregistered = true;
         unregister();
@@ -148,6 +161,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
       // Surface the failure on the pinned message too. Truncate to 80 chars
       // to keep the line skim-readable in the pinned header.
       deps.pinnedStatus?.setFailed(chatId, msg.slice(0, 80));
+      ActiveTurns.delete(sessionId);
       if (!unregistered) {
         unregistered = true;
         unregister();
@@ -235,6 +249,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
         // ❌ — network/HTTP error before opencode emitted any events.
         void reactFailed(deps.bot as never, chatId, userMessageId, deps.log);
         deps.pinnedStatus?.setFailed(chatId, msg.slice(0, 80));
+        ActiveTurns.delete(sessionId);
         if (!unregistered) {
           unregistered = true;
           unregister();

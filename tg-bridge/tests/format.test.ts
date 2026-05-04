@@ -5,6 +5,7 @@ import {
   renderToolLine,
   renderStreamingView,
   formatDuration,
+  buildCancelKeyboard,
   type RenderablePart,
 } from "../src/format.js";
 
@@ -537,5 +538,29 @@ describe("renderStreamingView with elapsed time", () => {
   it("omits elapsed when not provided (backward compat)", () => {
     const out = renderStreamingView([]);
     expect(out).toBe("_thinking…_");
+  });
+});
+
+describe("renderStreamingView cancel button", () => {
+  it("does not include button text in the rendered string (button is reply_markup only)", () => {
+    // The string output is just text — no Cancel button glyph baked in.
+    // The button itself is attached separately as reply_markup by the caller.
+    const out = renderStreamingView([]);
+    expect(out).not.toContain("Cancel");
+    expect(out).not.toContain("⏹");
+  });
+});
+
+describe("buildCancelKeyboard", () => {
+  it("returns inline_keyboard with single Cancel button keyed by sessionId", () => {
+    const kb = buildCancelKeyboard("ses_xyz");
+    expect(kb).toEqual({
+      inline_keyboard: [[{ text: "⏹ Cancel", callback_data: "cancel:ses_xyz" }]],
+    });
+  });
+
+  it("embeds the sessionId verbatim in callback_data", () => {
+    const kb = buildCancelKeyboard("ses_abc123");
+    expect(kb.inline_keyboard[0]?.[0]?.callback_data).toBe("cancel:ses_abc123");
   });
 });

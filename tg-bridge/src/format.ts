@@ -177,6 +177,27 @@ function formatDurationFromSeconds(sec: number): string {
   return `${m}m ${s}s`;
 }
 
+/**
+ * Inline-keyboard reply_markup for the streaming-view placeholder. One
+ * button labelled "⏹ Cancel" with callback_data `cancel:<sessionId>`.
+ *
+ * Attached by Turn.editNow on every streaming edit (and heartbeat tick),
+ * removed automatically on finalize() because the final-view edit goes
+ * through safeEdit without a replyMarkup argument — Telegram strips the
+ * keyboard when an edit omits reply_markup.
+ *
+ * The session ID is embedded directly in the callback_data so the index.ts
+ * router can look up the active Turn without consulting chat-state. Tested
+ * shape lives in format.test.ts.
+ */
+export function buildCancelKeyboard(sessionId: string): {
+  inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+} {
+  return {
+    inline_keyboard: [[{ text: "⏹ Cancel", callback_data: `cancel:${sessionId}` }]],
+  };
+}
+
 export interface StreamingViewOptions {
   /**
    * If provided, replaces the static "_thinking…_" placeholder with

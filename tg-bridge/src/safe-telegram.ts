@@ -10,7 +10,7 @@ export interface SafeEditBot {
     chatId: number,
     messageId: number,
     text: string,
-    opts: { parse_mode?: ParseMode },
+    opts: { parse_mode?: ParseMode; reply_markup?: object },
   ): Promise<unknown>;
 }
 
@@ -70,14 +70,30 @@ export async function safeEdit(
   text: string,
   log?: SafeLogger,
   parseMode: ParseMode = "HTML",
+  replyMarkup?: object,
 ): Promise<void> {
+  // Building the opts object conditionally keeps reply_markup OUT of the
+  // serialized payload when the caller didn't supply one. This matters on
+  // the finalize path: the streaming edit attached `[⏹ Cancel]`, then
+  // finalize calls safeEdit WITHOUT a reply_markup, and Telegram's
+  // editMessageText API removes any prior keyboard whenever the field is
+  // absent. Sending `reply_markup: undefined` would NOT strip it on some
+  // grammy serialisers, so we omit the key entirely.
+  const opts: { parse_mode: ParseMode; reply_markup?: object } = {
+    parse_mode: parseMode,
+  };
+  if (replyMarkup) opts.reply_markup = replyMarkup;
   try {
-    await bot.editMessageText(chatId, messageId, text, { parse_mode: parseMode });
+    await bot.editMessageText(chatId, messageId, text, opts);
     return;
   } catch (markupErr) {
     try {
       const plain = stripForMode(text, parseMode);
-      await bot.editMessageText(chatId, messageId, plain, {});
+      // Plain-text fallback drops parse_mode but preserves reply_markup so
+      // the Cancel button survives a parse-failed retry.
+      const plainOpts: { reply_markup?: object } = {};
+      if (replyMarkup) plainOpts.reply_markup = replyMarkup;
+      await bot.editMessageText(chatId, messageId, plain, plainOpts);
       return;
     } catch (plainErr) {
       log?.warn?.(
