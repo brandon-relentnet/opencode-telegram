@@ -133,7 +133,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
   const userMessageIds = new Set<string>();
 
   const handler: SessionEventHandler = {
-    onMessageCreated(msg) {
+    onMessageUpdated(msg) {
       const m = msg as {
         info?: {
           id?: string;

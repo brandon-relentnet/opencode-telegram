@@ -261,7 +261,7 @@ export async function createProject(
 
   let unregistered = false;
   const unregister = deps.router.registerSession(oneShotSession.id, {
-    onMessageCreated(msg) {
+    onMessageUpdated(msg) {
       const m = msg as {
         info?: {
           id?: string;

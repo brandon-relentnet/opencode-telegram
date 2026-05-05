@@ -285,7 +285,7 @@ export async function handleDeploy(ctx: Context, deps: DeployDeps): Promise<void
     const userMessageIds = new Set<string>();
     let unregistered = false;
     const unregister = deps.router.registerSession(session.id, {
-      onMessageCreated(msg) {
+      onMessageUpdated(msg) {
         const m = msg as {
           info?: {
             id?: string;

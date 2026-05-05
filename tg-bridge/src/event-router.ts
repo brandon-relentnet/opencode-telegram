@@ -23,10 +23,27 @@ export interface SessionEventHandler {
   /** Optional: handle `question.rejected`. Symmetric cleanup hook. */
   onQuestionRejected?(properties: unknown): void;
   /**
-   * Optional: handle `message.created` events. opencode emits this when a
-   * new message (user or assistant) is created within a session. The bridge
-   * uses this to track per-session user-message IDs so it can filter the
-   * user's echoed prompt out of the assistant's final view.
+   * Optional: handle message lifecycle events. opencode emits
+   * `message.updated` whenever a message is created OR updated in the
+   * session — the SDK has NO `message.created` event despite our previous
+   * naming. The first emission for an assistant message has empty tokens
+   * (`{ input: 0, output: 0, ... }`); the second carries the populated
+   * counts. Handlers should check token shape and dedupe accordingly
+   * (see CostTracker.recordAssistantMessage).
+   *
+   * The bridge uses this to:
+   *   - Track per-session user-message IDs so the assistant's echoed
+   *     prompt is filtered out of the final view
+   *   - Forward token + cost data to CostTracker
+   *   - Update chat_state.agent_mode + last_activity_at
+   */
+  onMessageUpdated?(properties: unknown): void;
+  /**
+   * Deprecated alias for backward compat — old code paths called the
+   * handler `onMessageCreated`. EventRouter dispatches `message.updated`
+   * to BOTH `onMessageUpdated` and `onMessageCreated` so existing
+   * call-site renames can land in a separate commit. Remove once all
+   * call sites have migrated to onMessageUpdated.
    */
   onMessageCreated?(properties: unknown): void;
   /**
@@ -206,7 +223,13 @@ export class EventRouter {
         case "question.rejected":
           handler.onQuestionRejected?.(evt.properties);
           return;
+        case "message.updated":
         case "message.created":
+          // opencode emits `message.updated`; we accept both the real event
+          // type and the legacy/never-emitted `message.created` for
+          // resilience. Dispatch to BOTH handler methods so callers can
+          // migrate from onMessageCreated → onMessageUpdated incrementally.
+          handler.onMessageUpdated?.(evt.properties);
           handler.onMessageCreated?.(evt.properties);
           return;
         case "session.status":
@@ -228,8 +251,13 @@ export class EventRouter {
       const part = (evt.properties as { part?: { sessionID?: string } } | undefined)?.part;
       return typeof part?.sessionID === "string" ? part.sessionID : undefined;
     }
-    if (evt.type === "message.created") {
-      // opencode wraps the message under `properties.info`; sessionID lives there.
+    if (evt.type === "message.created" || evt.type === "message.updated") {
+      // For both message events: sessionID is on properties.sessionID
+      // (top-level for message.updated per SDK type EventMessageUpdated)
+      // OR nested under properties.info.sessionID (legacy assumption).
+      // Try both for resilience.
+      const top = evt.properties?.sessionID;
+      if (typeof top === "string") return top;
       const info = (evt.properties as { info?: { sessionID?: string } } | undefined)?.info;
       return typeof info?.sessionID === "string" ? info.sessionID : undefined;
     }
@@ -240,6 +268,7 @@ export class EventRouter {
   private isKnownType(type: string): boolean {
     return (
       type === "message.part.updated" ||
+      type === "message.updated" ||
       type === "message.created" ||
       type === "session.idle" ||
       type === "session.error" ||

@@ -591,6 +591,82 @@ describe("createSession", () => {
       time: { created: 1_700_000_000_000, updated: 1_700_000_000_000 },
     });
   });
+
+  it("(Bug C3) follows up with getSession when create response omits slug", async () => {
+    // The production server's POST /session response omits `slug` even
+    // though GET /session/{id} returns it. The wrapper backfills with a
+    // single getSession call. Verified by counting fetch calls + asserting
+    // the second call hits GET /session/{id}.
+    let callIdx = 0;
+    const innerFetch = vi.fn(async (input: unknown) => {
+      const url = (input as { url?: string }).url ?? String(input);
+      callIdx += 1;
+      if (callIdx === 1) {
+        // POST /session — no slug, no time
+        return new Response(
+          JSON.stringify({
+            id: "ses_xyz",
+            directory: "/workspace/proj",
+            projectID: "proj_1",
+            title: "untitled",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      // GET /session/ses_xyz — full record with slug + time
+      expect(url).toContain("/session/ses_xyz");
+      return new Response(
+        JSON.stringify({
+          id: "ses_xyz",
+          directory: "/workspace/proj",
+          projectID: "proj_1",
+          title: "untitled",
+          slug: "playful-meadow",
+          time: { created: 1_700_000_000_000, updated: 1_700_000_000_000 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+
+    const result = await client.createSession();
+
+    expect(callIdx).toBe(2); // POST then GET
+    expect(result.slug).toBe("playful-meadow");
+    expect(result.time?.created).toBe(1_700_000_000_000);
+  });
+
+  it("(Bug C3) returns id-only when both create and follow-up getSession lack slug", async () => {
+    // Defensive: if the follow-up GET also doesn't include slug (or fails),
+    // we still return the id so callers can proceed. chat_state.session_slug
+    // becomes null and renders as em-dash.
+    const innerFetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: "ses_no_slug",
+            directory: "/workspace/proj",
+            projectID: "proj_1",
+            title: "untitled",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    ) as unknown as typeof fetch;
+    const client = makeOpencodeClient({
+      baseUrl: "http://opencode.test:4096",
+      username: "u",
+      password: "p",
+      fetch: innerFetch,
+    });
+    const result = await client.createSession();
+    expect(result.id).toBe("ses_no_slug");
+    expect(result.slug).toBeUndefined();
+  });
 });
 
 /**

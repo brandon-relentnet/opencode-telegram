@@ -266,6 +266,40 @@ export function makeOpencodeClient(opts: OpencodeClientOptions): BridgeOpencodeC
       ) {
         result.time = { created: raw.time.created, updated: raw.time.updated };
       }
+      // The POST /session response in this server build omits the `slug`
+      // field even though GET /session/{id} returns it. Follow up with a
+      // single getSession call to backfill slug + time when missing —
+      // costs ~50ms once per /switch | /new | /init | /clone | /deploy
+      // first-create. Defensive: if getSession fails (auth blip, race,
+      // network), return what create gave us so the caller still gets
+      // an id and can proceed.
+      if (result.slug === undefined || result.time === undefined) {
+        try {
+          const { data: full } = await client.session.get({
+            path: { id: data.id },
+            ...(options?.directory ? { query: { directory: options.directory } } : {}),
+          });
+          const fullRaw = full as unknown as {
+            slug?: unknown;
+            time?: { created?: unknown; updated?: unknown };
+          };
+          if (result.slug === undefined && typeof fullRaw.slug === "string") {
+            result.slug = fullRaw.slug;
+          }
+          if (
+            result.time === undefined &&
+            fullRaw.time &&
+            typeof fullRaw.time.created === "number" &&
+            typeof fullRaw.time.updated === "number"
+          ) {
+            result.time = { created: fullRaw.time.created, updated: fullRaw.time.updated };
+          }
+        } catch {
+          // Swallow — the session exists per the create response; downstream
+          // callers tolerate undefined slug/time (chat_state.session_slug
+          // becomes null and renders as em-dash in pinned/info).
+        }
+      }
       return result;
     },
 

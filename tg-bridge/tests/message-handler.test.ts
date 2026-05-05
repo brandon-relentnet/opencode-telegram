@@ -444,7 +444,7 @@ describe("handleTextMessage", () => {
       costTracker,
     });
     const handler = router.registered!;
-    handler.onMessageCreated!({
+    handler.onMessageUpdated!({
       info: {
         id: "msg_1",
         role: "assistant",
@@ -481,7 +481,7 @@ describe("handleTextMessage", () => {
     });
     const handler = router.registered!;
     expect(state.getAgentMode(1)).toBeNull();
-    handler.onMessageCreated!({
+    handler.onMessageUpdated!({
       info: { id: "msg_1", role: "assistant", agent: "plan" },
     });
     expect(state.getAgentMode(1)).toBe("plan");

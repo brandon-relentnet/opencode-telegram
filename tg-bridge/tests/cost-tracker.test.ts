@@ -65,14 +65,70 @@ describe("CostTracker", () => {
     expect(repo.getCumulativeStats(1).tokensInput).toBe(100);
   });
 
-  it("handles missing tokens gracefully", () => {
+  it("skips records with missing tokens (placeholder semantic)", () => {
+    // opencode emits message.updated TWICE per assistant message: first as
+    // a placeholder with tokens.input + tokens.output both === 0, then again
+    // at completion with the populated counts. We must skip the placeholder
+    // — counting it would lock in a zero record, and the dedup-by-id check
+    // would then ignore the populated update. Records with tokens entirely
+    // missing follow the same skip rule (it's a malformed/early state).
     tracker.recordAssistantMessage(1, {
       id: "msg_1",
       tokens: undefined as unknown as { input: number; output: number; reasoning: number; cache: { read: number; write: number } },
       cost: 0.001,
     });
     expect(repo.getCumulativeStats(1).tokensInput).toBe(0);
-    expect(repo.getCumulativeStats(1).costMicros).toBe(1_000);
+    expect(repo.getCumulativeStats(1).costMicros).toBe(0);
+  });
+
+  it("(Bug C2) skips placeholder events with input=0 and output=0", () => {
+    // The opencode placeholder shape — exactly what message.updated emits
+    // first, before the model runs. Must not be recorded.
+    tracker.recordAssistantMessage(1, {
+      id: "msg_placeholder",
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      cost: 0,
+    });
+    const stats = repo.getCumulativeStats(1);
+    expect(stats.tokensInput).toBe(0);
+    expect(stats.tokensOutput).toBe(0);
+  });
+
+  it("(Bug C2) records the populated update after a skipped placeholder", () => {
+    // First emission: placeholder, must be skipped.
+    tracker.recordAssistantMessage(1, {
+      id: "msg_X",
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      cost: 0,
+    });
+    // Second emission: same id, populated tokens. Must record.
+    tracker.recordAssistantMessage(1, {
+      id: "msg_X",
+      tokens: { input: 370, output: 151, reasoning: 0, cache: { read: 148480, write: 0 } },
+      cost: 0.04,
+    });
+    const stats = repo.getCumulativeStats(1);
+    expect(stats.tokensInput).toBe(370);
+    expect(stats.tokensOutput).toBe(151);
+    expect(stats.tokensCacheRead).toBe(148480);
+    expect(stats.costMicros).toBe(40_000);
+  });
+
+  it("(Bug C2) still dedups two non-zero emissions for the same id", () => {
+    tracker.recordAssistantMessage(1, {
+      id: "msg_Y",
+      tokens: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
+      cost: 0.005,
+    });
+    tracker.recordAssistantMessage(1, {
+      id: "msg_Y",
+      tokens: { input: 100, output: 50, reasoning: 0, cache: { read: 0, write: 0 } },
+      cost: 0.005,
+    });
+    const stats = repo.getCumulativeStats(1);
+    expect(stats.tokensInput).toBe(100);
+    expect(stats.tokensOutput).toBe(50);
+    expect(stats.costMicros).toBe(5_000);
   });
 
   it("reset clears the seen-IDs cache and chat_state cumulative", () => {

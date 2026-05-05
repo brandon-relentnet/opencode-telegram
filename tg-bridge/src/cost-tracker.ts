@@ -23,6 +23,19 @@ export class CostTracker {
 
   recordAssistantMessage(chatId: number, info: AssistantMessageInfo): void {
     if (typeof info.id !== "string" || info.id.length === 0) return;
+
+    const tokens = info.tokens ?? {};
+    const inputTokens = tokens.input ?? 0;
+    const outputTokens = tokens.output ?? 0;
+    // opencode emits message.updated TWICE per assistant message: first as
+    // a placeholder with tokens.input + tokens.output both === 0, then
+    // again at completion with the populated counts. We must skip the
+    // empty placeholder — otherwise the dedup-by-id check below would lock
+    // in the zero record and ignore the populated one. Only count when at
+    // least one of input/output tokens is non-zero (the model has actually
+    // produced output worth metering).
+    if (inputTokens === 0 && outputTokens === 0) return;
+
     let seen = this.seenByChat.get(chatId);
     if (!seen) {
       seen = new Set();
@@ -31,11 +44,10 @@ export class CostTracker {
     if (seen.has(info.id)) return;
     seen.add(info.id);
 
-    const tokens = info.tokens ?? {};
     const cache = tokens.cache ?? {};
     this.state.incrementCumulativeStats(chatId, {
-      tokensInput: tokens.input ?? 0,
-      tokensOutput: tokens.output ?? 0,
+      tokensInput: inputTokens,
+      tokensOutput: outputTokens,
       tokensReasoning: tokens.reasoning ?? 0,
       tokensCacheRead: cache.read ?? 0,
       tokensCacheWrite: cache.write ?? 0,
