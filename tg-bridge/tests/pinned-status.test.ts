@@ -68,7 +68,12 @@ describe("PinnedStatusManager", () => {
     const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
     psm.setIdle(1);
     await psm.flushNow(1);
-    psm.setWorking(1, "fixing navbar");
+    // Use a chat_state mutation (project change) since that DOES change the
+    // rendered pinned text. setIdle → setWorking would render identically
+    // (status detail was dropped from the pinned layout in Task 6) and the
+    // fingerprint cache would correctly suppress the edit.
+    repo.setProject(1, "/workspace/new-proj", "ses_xyz");
+    psm.notifyStateChange(1);
     await psm.flushNow(1);
     expect(bot.sent).toHaveLength(1);
     expect(bot.edits).toHaveLength(1);
@@ -226,5 +231,107 @@ describe("PinnedStatusManager", () => {
     const sentText = String(bot.sent[0]![1]);
     // Find the git line — should contain 3 ahead and 3 dirty (2+1).
     expect(sentText).toContain("🔀 3 ahead · 3 dirty");
+  });
+});
+
+describe("PinnedStatusManager no-spam (Bug A)", () => {
+  it("isMessageNotModifiedError detects telegram's no-op response", async () => {
+    const { isMessageNotModifiedError } = await import("../src/pinned-status.js");
+    expect(isMessageNotModifiedError({ description: "Bad Request: message is not modified" })).toBe(true);
+    expect(isMessageNotModifiedError({ message: "Bad Request: message is not modified: ..." })).toBe(true);
+    // Case-insensitive
+    expect(isMessageNotModifiedError({ description: "MESSAGE IS NOT MODIFIED" })).toBe(true);
+    // Other errors should NOT match
+    expect(isMessageNotModifiedError({ description: "Bad Request: message to edit not found" })).toBe(false);
+    expect(isMessageNotModifiedError({ description: "Forbidden: bot was blocked" })).toBe(false);
+    expect(isMessageNotModifiedError(null)).toBe(false);
+    expect(isMessageNotModifiedError(undefined)).toBe(false);
+    expect(isMessageNotModifiedError("string error")).toBe(false);
+  });
+
+  it("skips Telegram API call when content fingerprint unchanged", async () => {
+    const bot = makeBot();
+    repo.setProject(1, "/workspace/x", "ses_abc");
+    const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
+    psm.setIdle(1);
+    await psm.flushNow(1);
+    expect(bot.sent).toHaveLength(1);
+    expect(bot.pins).toHaveLength(1);
+    // Second flush with no state change — should NOT call edit at all.
+    psm.notifyStateChange(1);
+    await psm.flushNow(1);
+    expect(bot.edits).toHaveLength(0);
+    expect(bot.sent).toHaveLength(1); // still just the initial pin
+  });
+
+  it("treats 'message is not modified' error as success (no recreate)", async () => {
+    const bot = makeBot();
+    // Simulate the cache being out of sync (e.g. PSM restarted): editMessageText
+    // is called and Telegram replies with "not modified". Bridge must NOT
+    // recreate the pinned message in this case.
+    bot.api.editMessageText = vi.fn(async () => {
+      const err: { description: string } = {
+        description: "Bad Request: message is not modified: specified new message content and reply markup are exactly the same as a current content",
+      };
+      throw err;
+    });
+    repo.setProject(1, "/workspace/x", "ses_abc");
+    repo.setPinnedMessageId(1, 999);
+    const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
+    psm.setIdle(1);
+    await psm.flushNow(1);
+    // editMessageText was attempted (bot.api.editMessageText was called)
+    expect(vi.mocked(bot.api.editMessageText)).toHaveBeenCalledTimes(1);
+    // sendMessage was NOT called (no recreate)
+    expect(bot.sent).toHaveLength(0);
+    expect(bot.pins).toHaveLength(0);
+    // pinned_message_id stays at 999
+    expect(repo.getPinnedMessageId(1)).toBe(999);
+  });
+
+  it("still recreates on real 'message to edit not found' error", async () => {
+    const bot = makeBot();
+    bot.api.editMessageText = vi.fn(async () => {
+      throw { description: "Bad Request: message to edit not found" };
+    });
+    repo.setProject(1, "/workspace/x", "ses_abc");
+    repo.setPinnedMessageId(1, 999);
+    const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
+    psm.setIdle(1);
+    await psm.flushNow(1);
+    // edit attempted, then recreate path fires
+    expect(bot.sent).toHaveLength(1);
+    expect(bot.pins).toHaveLength(1);
+    expect(repo.getPinnedMessageId(1)).toBe(999);
+  });
+
+  it("fingerprint cache is per-chat (chat 2 doesn't see chat 1's cache)", async () => {
+    const bot = makeBot();
+    repo.setProject(1, "/workspace/x", "ses_abc");
+    repo.setProject(2, "/workspace/y", "ses_def");
+    const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
+    psm.setIdle(1);
+    await psm.flushNow(1);
+    psm.setIdle(2);
+    await psm.flushNow(2);
+    // Both chats got their own pin
+    expect(bot.sent).toHaveLength(2);
+  });
+
+  it("successful edit caches new fingerprint to short-circuit subsequent flush", async () => {
+    const bot = makeBot();
+    repo.setProject(1, "/workspace/x", "ses_abc");
+    const psm = new PinnedStatusManager(bot as never, repo, { debounceMs: 0 });
+    psm.setIdle(1);
+    await psm.flushNow(1);
+    // Triggering a REAL render change (project change) → edit fires
+    repo.setProject(1, "/workspace/y", "ses_def");
+    psm.notifyStateChange(1);
+    await psm.flushNow(1);
+    expect(bot.edits).toHaveLength(1);
+    // Same state again → fingerprint short-circuits, no second edit
+    psm.notifyStateChange(1);
+    await psm.flushNow(1);
+    expect(bot.edits).toHaveLength(1);
   });
 });

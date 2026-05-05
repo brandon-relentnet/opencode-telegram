@@ -44,6 +44,19 @@ export class PinnedStatusManager {
   private timers = new Map<number, NodeJS.Timeout>();
   private readonly debounceMs: number;
   private readonly log: Options["log"];
+  /**
+   * Cache of the last text successfully written to (or sent as) the pinned
+   * message per chat. When a flush computes the same text, we skip the
+   * Telegram API call entirely — Telegram would respond with
+   * "message is not modified" anyway, and the previous (buggy) catch-all
+   * recreate-on-error path would then create a fresh pinned message,
+   * spamming the chat with "Bot has pinned a message" service notices.
+   *
+   * Cleared whenever we recreate the pinned message (the new message_id
+   * has no prior content). Survives bridge restarts ONLY in chat_state's
+   * pinned_message_id; the fingerprint cache is intentionally in-memory.
+   */
+  private lastSentText = new Map<number, string>();
 
   constructor(
     private bot: PinnedStatusBot,
@@ -147,12 +160,33 @@ export class PinnedStatusManager {
       await this.createAndPin(chatId, text);
       return;
     }
+    // Short-circuit: if the rendered text matches what we last successfully
+    // wrote to this pinned message, skip the Telegram API call entirely.
+    // Without this, every notifyStateChange triggers an editMessageText that
+    // Telegram rejects as "message is not modified", which the old
+    // catch-all error handler treated as "message gone" and recreated a
+    // fresh pinned message — spamming the chat with "Bot has pinned a
+    // message" service notifications (the user-reported bug).
+    if (this.lastSentText.get(chatId) === text) return;
     try {
       await this.bot.api.editMessageText(chatId, pinnedId, text, {
         parse_mode: "HTML",
         reply_markup: this.buildKeyboard(),
       });
+      this.lastSentText.set(chatId, text);
     } catch (err) {
+      // Distinguish benign "no-op" errors from real "message gone" errors.
+      // Telegram returns "message is not modified" when the new content +
+      // reply_markup are byte-identical to what's already there. That's a
+      // success in disguise — fingerprint it and move on. ONLY recreate
+      // when the message is genuinely gone (deleted, manually unpinned, or
+      // chat history wiped).
+      if (isMessageNotModifiedError(err)) {
+        // Cache the fingerprint so subsequent flushes short-circuit at the
+        // top of this method instead of round-tripping again.
+        this.lastSentText.set(chatId, text);
+        return;
+      }
       this.log?.warn?.(
         { err, chatId, pinnedId },
         "edit pinned status failed; recreating",
@@ -184,6 +218,9 @@ export class PinnedStatusManager {
         disable_notification: true,
       });
       this.repo.setPinnedMessageId(chatId, msgId);
+      // Track the new pinned message's content so subsequent flushes
+      // can short-circuit when nothing changed.
+      this.lastSentText.set(chatId, text);
     } catch (err) {
       this.log?.warn?.(
         { err, chatId, msgId },
@@ -288,4 +325,23 @@ export class PinnedStatusManager {
       ],
     };
   }
+}
+
+/**
+ * Telegram returns "Bad Request: message is not modified: specified new
+ * message content and reply markup are exactly the same as a current
+ * content" when an editMessageText call would result in no observable
+ * change. This is a no-op success in disguise — both grammy's GrammyError
+ * and a generic Error wrapping the same payload reach the same call site,
+ * so we string-match the message rather than instanceof-check.
+ *
+ * Exported for tests.
+ */
+export function isMessageNotModifiedError(err: unknown): boolean {
+  if (err == null) return false;
+  const description =
+    (err as { description?: unknown }).description ??
+    (err as { message?: unknown }).message;
+  if (typeof description !== "string") return false;
+  return description.toLowerCase().includes("message is not modified");
 }
