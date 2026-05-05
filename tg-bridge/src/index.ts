@@ -388,6 +388,13 @@ async function main(): Promise<void> {
       permissions,
       questions,
       bot: turnBot,
+      // Reactions need the grammy Bot's `.api.setMessageReaction` directly;
+      // the TurnBot adapter doesn't have an `.api` property. See Bug B fix
+      // commit + reactions.ts ReactionBot interface. Cast is required
+      // because grammy's setMessageReaction signature uses a literal-union
+      // emoji type that our narrower ReactionBot interface declares as
+      // `string` — runtime-equivalent, type-incompatible.
+      reactionBot: bot as unknown as Parameters<typeof handleTextMessage>[1]["reactionBot"],
       defaultModel: config.defaultModel,
       pinnedStatus,
       costTracker,

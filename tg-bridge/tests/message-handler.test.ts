@@ -54,6 +54,15 @@ function makeBot() {
   };
 }
 
+function makeReactionBot() {
+  return {
+    api: {
+      setMessageReaction: vi.fn(async () => undefined),
+    },
+  };
+}
+
+
 /**
  * Stub CostTracker dependency. message-handler forwards each assistant
  * message.created event to recordAssistantMessage; tests that don't
@@ -100,6 +109,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -124,6 +134,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -150,6 +161,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -175,6 +187,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -205,6 +218,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -230,6 +244,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: permissions as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -276,6 +291,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -318,6 +334,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -349,6 +366,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions,
       defaultModel: DEFAULT_MODEL,
@@ -380,6 +398,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions,
       defaultModel: DEFAULT_MODEL,
@@ -418,6 +437,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -453,6 +473,7 @@ describe("handleTextMessage", () => {
       client,
       router,
       bot,
+      reactionBot: makeReactionBot(),
       permissions: { sendRequest: vi.fn() } as never,
       questions: makeQuestions(),
       defaultModel: DEFAULT_MODEL,
@@ -466,5 +487,34 @@ describe("handleTextMessage", () => {
     expect(state.getAgentMode(1)).toBe("plan");
     // last_activity_at was bumped on the same event
     expect(state.getLastActivityAt(1)).not.toBeNull();
+  });
+
+  it("(Bug B) reactions wiring: calls reactionBot.api.setMessageReaction with thumbs-up on receipt", async () => {
+    state.setProject(1, "/workspace/x", "ses_a");
+    const ctx = makeFakeCtx({ chatId: 1, text: "do something" });
+    ctx.message = { ...ctx.message, message_id: 42 } as never;
+    ctx.reply.mockResolvedValue({ message_id: 555 });
+    const router = makeRouter();
+    const client = makeClient();
+    const bot = makeBot();
+    const reactionBot = makeReactionBot();
+    await handleTextMessage(ctx as never, {
+      state,
+      client,
+      router,
+      bot,
+      reactionBot,
+      permissions: { sendRequest: vi.fn() } as never,
+      questions: makeQuestions(),
+      defaultModel: DEFAULT_MODEL,
+      costTracker: makeCostTracker(),
+    });
+    // 👍 fires synchronously on entry (fire-and-forget; advance microtask).
+    await new Promise((r) => setImmediate(r));
+    expect(reactionBot.api.setMessageReaction).toHaveBeenCalledWith(
+      1,
+      42,
+      [{ type: "emoji", emoji: "👍" }],
+    );
   });
 });

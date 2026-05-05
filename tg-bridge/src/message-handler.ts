@@ -4,7 +4,7 @@ import { escapeMarkdownV2 } from "./format.js";
 import { Turn, type TurnBot } from "./turn.js";
 import { describeError } from "./errors.js";
 import { parseModelId } from "./config.js";
-import { reactProcessing, reactDone, reactFailed } from "./reactions.js";
+import { reactProcessing, reactDone, reactFailed, type ReactionBot } from "./reactions.js";
 import type { OpencodeClient } from "./opencode-client.js";
 import type { ChatStateRepo } from "./chat-state.js";
 import type { SessionEventHandler } from "./event-router.js";
@@ -31,6 +31,15 @@ export interface MessageHandlerDeps {
     notifyRejected(payload: unknown): Promise<void>;
   };
   bot: TurnBot;
+  /**
+   * Grammy bot reference (or anything exposing `bot.api.setMessageReaction`).
+   * Required separately from `bot: TurnBot` because TurnBot is a thin
+   * adapter that only has `editMessageText` / `sendMessage` — it has no
+   * `.api` property, so passing it to reaction helpers throws
+   * `TypeError: Cannot read properties of undefined (reading 'setMessageReaction')`.
+   * The grammy `Bot` instance has `.api`; pass that here.
+   */
+  reactionBot: ReactionBot;
   /**
    * Default model used when the chat has no per-chat model override.
    * Format: "<providerID>/<modelID>" (e.g. "anthropic/claude-sonnet-4-5").
@@ -87,7 +96,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
 
   // 👍 — acknowledge receipt immediately. Done before any heavy work so the
   // user gets feedback even if opencode is slow to respond.
-  void reactProcessing(deps.bot as never, chatId, userMessageId, deps.log);
+  void reactProcessing(deps.reactionBot, chatId, userMessageId, deps.log);
 
   // Flip the pinned status to "Working" with a short preview of the prompt
   // so the chat header reflects the in-flight turn. PSM debounces edits
@@ -176,7 +185,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
         );
       }
       // ✅ — turn finalized successfully. Replaces the prior 👍.
-      void reactDone(deps.bot as never, chatId, userMessageId, deps.log);
+      void reactDone(deps.reactionBot, chatId, userMessageId, deps.log);
       // Flip the pinned status back to Idle now that the turn finished.
       deps.pinnedStatus?.setIdle(chatId);
       // Re-flush pinned so any branch / git state the agent mutated this
@@ -201,7 +210,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
         );
       }
       // ❌ — session-level error. Replaces the prior 👍.
-      void reactFailed(deps.bot as never, chatId, userMessageId, deps.log);
+      void reactFailed(deps.reactionBot, chatId, userMessageId, deps.log);
       // Surface the failure on the pinned message too. Truncate to 80 chars
       // to keep the line skim-readable in the pinned header.
       deps.pinnedStatus?.setFailed(chatId, msg.slice(0, 80));
@@ -291,7 +300,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
         await turn.showError(`prompt failed: ${msg}`);
       } finally {
         // ❌ — network/HTTP error before opencode emitted any events.
-        void reactFailed(deps.bot as never, chatId, userMessageId, deps.log);
+        void reactFailed(deps.reactionBot, chatId, userMessageId, deps.log);
         deps.pinnedStatus?.setFailed(chatId, msg.slice(0, 80));
         ActiveTurns.delete(sessionId);
         if (!unregistered) {
