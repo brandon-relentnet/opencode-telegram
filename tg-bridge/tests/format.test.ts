@@ -4,6 +4,7 @@ import {
   toolEmoji,
   renderToolLine,
   renderStreamingView,
+  renderTransparentView,
   formatDuration,
   buildCancelKeyboard,
   renderPinnedStatus,
@@ -802,5 +803,62 @@ describe("renderStreamingHeader", () => {
     const lines = out.split("\n");
     // Still renders since tokens are present.
     expect(lines[0]).toContain("— · — · 24k tokens");
+  });
+});
+
+describe("renderTransparentView", () => {
+  it("renders prose + tool inline + done marker on final", () => {
+    const out = renderTransparentView(
+      [
+        { type: "tool", tool: "bash", state: { status: "completed", input: { command: "pwd" } } },
+        { type: "text", text: "Working dir is /workspace.", role: "assistant" },
+      ],
+      { final: true },
+    );
+    expect(out).toContain("bash");
+    expect(out).toContain("pwd");
+    expect(out).toContain("Working dir is /workspace");
+    expect(out).toContain("─ done ─");
+  });
+
+  it("filters user-role text parts", () => {
+    const out = renderTransparentView(
+      [
+        { type: "text", text: "what time is it?", role: "user" },
+        { type: "text", text: "It's 3pm.", role: "assistant" },
+      ],
+      { final: true },
+    );
+    expect(out).not.toContain("what time is it");
+    expect(out).toContain("3pm");
+  });
+
+  it("filters assistant text that echoes the user's prompt", () => {
+    const out = renderTransparentView(
+      [
+        { type: "text", text: "fix the navbar mobile responsive", role: "assistant" },
+        { type: "text", text: "Done — added the breakpoints.", role: "assistant" },
+      ],
+      { final: true, lastUserPrompt: "fix the navbar mobile responsive" },
+    );
+    expect(out).not.toContain("fix the navbar mobile responsive");
+    expect(out).toContain("Done");
+  });
+
+  it("emits thinking placeholder while non-final", () => {
+    const out = renderTransparentView([], {});
+    expect(out).toContain("thinking…");
+    expect(out).not.toContain("─ done ─");
+  });
+
+  it("renders reasoning parts in dimmed expandable blockquote", () => {
+    const out = renderTransparentView(
+      [
+        { type: "reasoning", text: "I should check the tests first" },
+      ],
+      { final: true },
+    );
+    expect(out).toContain("<blockquote");
+    expect(out).toContain("I should check the tests first");
   });
 });

@@ -22,6 +22,8 @@ import { handleModel, handleModelCallback } from "./commands/model.js";
 import { handlePin, handleUnpin } from "./commands/pin.js";
 import { handleSessions, handleSessionCallback } from "./commands/sessions.js";
 import { handleInfo } from "./commands/info.js";
+import { handleTrace } from "./commands/trace.js";
+import { TraceBuffer } from "./trace-buffer.js";
 import { handleTextMessage } from "./message-handler.js";
 import { PinnedStatusManager, type PinnedStatusBot } from "./pinned-status.js";
 import { ActiveTurns } from "./active-turns.js";
@@ -116,6 +118,13 @@ async function main(): Promise<void> {
   // assistant message.created event into chat_state.cumulative_* and
   // dedupes by message id. Reset on /new and /switch.
   const costTracker = new CostTracker(state);
+
+  // TraceBuffer — per-chat ring buffer of recent bridge events. Used by
+  // the /trace command for live remote debugging. Decoupled from pino
+  // structured logs (which are still emitted at info level for `journalctl
+  // | jq` post-hoc analysis); this gives operators a way to inspect the
+  // bridge from inside Telegram when SSH isn't available.
+  const trace = new TraceBuffer();
 
   // 1) Whitelist gate runs before everything else.
   bot.use(whitelistMiddleware(config.allowedUserIds));
@@ -222,6 +231,7 @@ async function main(): Promise<void> {
   bot.command("unpin", (ctx) => handleUnpin(ctx, { pinnedStatus }));
   bot.command("sessions", (ctx) => handleSessions(ctx, sessionsDeps));
   bot.command("info", (ctx) => handleInfo(ctx, infoDeps));
+  bot.command("trace", (ctx) => handleTrace(ctx, { trace, log }));
 
   // 3) Permission + question button callbacks.
   bot.on("callback_query:data", async (ctx) => {
@@ -398,6 +408,7 @@ async function main(): Promise<void> {
       defaultModel: config.defaultModel,
       pinnedStatus,
       costTracker,
+      trace,
       log,
     });
   });
@@ -473,6 +484,7 @@ async function registerCommands(bot: Bot, log: pino.Logger): Promise<void> {
       { command: "deploy", description: "Push + deploy current project to Coolify" },
       { command: "pin", description: "Re-engage the pinned status message" },
       { command: "unpin", description: "Pause auto-updates of pinned status" },
+      { command: "trace", description: "Show recent bridge events for this chat (debug)" },
     ]);
   } catch (err) {
     log.warn({ err }, "setMyCommands failed; commands still work via typing");

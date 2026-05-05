@@ -65,6 +65,11 @@ export interface MessageHandlerDeps {
    * silent failures in permission delivery are very hard to debug.
    */
   log?: Pick<Logger, "info" | "warn" | "error">;
+  /**
+   * Per-chat trace ring buffer for `/trace` debug command. Optional so
+   * legacy/test fixtures can omit it; production wires it from index.ts.
+   */
+  trace?: import("./trace-buffer.js").TraceBuffer;
 }
 
 interface IncomingTextPart {
@@ -94,6 +99,17 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
     return;
   }
 
+  deps.trace?.record(chatId, "user.message", {
+    sessionId: stateRow.sessionId,
+    project: stateRow.projectPath,
+    textLen: text.length,
+    userMessageId,
+  });
+  deps.log?.info?.(
+    { evt: "user.message", chatId, sessionId: stateRow.sessionId, textLen: text.length },
+    "received user message",
+  );
+
   // 👍 — acknowledge receipt immediately. Done before any heavy work so the
   // user gets feedback even if opencode is slow to respond.
   void reactProcessing(deps.reactionBot, chatId, userMessageId, deps.log);
@@ -118,6 +134,7 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
   // ActiveTurns registry below.
   const turn = new Turn(deps.bot, chatId, placeholderId, {
     cancelCallbackData: `cancel:${sessionId}`,
+    lastUserPrompt: text,
   });
   // Register the in-flight Turn so the cancel-button callback can find it.
   // Removed from the map in every terminal branch (idle / error / prompt
@@ -169,13 +186,31 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
     },
     onPartUpdated(part) {
       const p = part as IncomingTextPart;
-      if (typeof p.id === "string") turn.appendPart(p);
+      if (typeof p.id === "string") {
+        deps.trace?.record(chatId, "part.updated", {
+          sessionId,
+          partId: p.id,
+          partType: p.type,
+          tool: p.tool,
+          textLen: typeof p.text === "string" ? p.text.length : undefined,
+        });
+        turn.appendPart(p);
+      }
     },
     onSessionStatus(properties) {
       const status = (properties as { status?: unknown }).status;
-      if (status) turn.setSessionStatus(status);
+      if (status) {
+        const s = status as { type?: string; attempt?: number };
+        deps.trace?.record(chatId, "session.status", {
+          sessionId,
+          type: s.type,
+          attempt: s.attempt,
+        });
+        turn.setSessionStatus(status);
+      }
     },
     async onIdle() {
+      deps.trace?.record(chatId, "session.idle", { sessionId });
       try {
         await turn.finalize({ userMessageIds });
       } catch (err) {
@@ -201,6 +236,11 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
     },
     async onError(err) {
       const msg = describeError(err);
+      deps.trace?.record(chatId, "session.error", { sessionId, msg });
+      deps.log?.warn?.(
+        { evt: "session.error", chatId, sessionId, msg },
+        "session error",
+      );
       try {
         await turn.showError(msg);
       } catch (showErr) {

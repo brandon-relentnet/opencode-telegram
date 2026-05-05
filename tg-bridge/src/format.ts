@@ -15,6 +15,7 @@
  */
 
 import { commonmarkToTelegramHtml, escapeHtml } from "./markdown-to-html.js";
+import { isPromptEcho } from "./prompt-echo.js";
 
 const RESERVED_RE = /[_*[\]()~`>#+\-=|{}.!\\]/g;
 
@@ -450,6 +451,165 @@ export function renderFinalView(
   if (summary === "") return body;
   if (body === "") return `${summary}\n\n<i>${escapeHtml("(no response text)")}</i>`;
   return `${summary}\n\n${body}`;
+}
+
+/**
+ * Options for the transparent-mode renderer.
+ */
+export interface TransparentViewOptions {
+  /** Set of message IDs known to be from the user; their parts are filtered. */
+  userMessageIds?: Set<string>;
+  /**
+   * The most recent user prompt. Used by isPromptEcho to filter assistant
+   * text that just restates the user's question.
+   */
+  lastUserPrompt?: string | null;
+  /**
+   * When true, append the "─ done ─" terminal marker so the user sees
+   * the turn has fully wrapped (vs still streaming).
+   */
+  final?: boolean;
+  /**
+   * If provided, replaces the static thinking placeholder when the agent
+   * is still working (`final` is false). Used by Turn's heartbeat.
+   */
+  elapsedSeconds?: number;
+  /**
+   * Rate-limit retry banner. Same shape as StreamingViewOptions.retryStatus.
+   */
+  retryStatus?: {
+    attempt: number;
+    message: string;
+    next: number;
+    now?: number;
+  };
+}
+
+const DONE_MARKER = "<i>─ done ─</i>";
+
+/**
+ * Render the session's parts as a continuous transparent stream:
+ * narration, tool activity, reasoning, and prose all in arrival order,
+ * with activity dimmed (italic) and prose normal.
+ *
+ * This replaces the prior split between `renderStreamingView` (curated
+ * tool list + thinking) and `renderFinalView` (summary header +
+ * concatenated text) so the user sees what the agent is actually doing
+ * the whole time, like opencode's TUI but in Telegram.
+ *
+ * Output is HTML (Telegram parse_mode: "HTML"). Per-part text is run
+ * through `commonmarkToTelegramHtml` so the agent's `**bold**` etc.
+ * render correctly. User-role text is filtered. Assistant text matching
+ * the user's last prompt heuristically (see prompt-echo.ts) is filtered.
+ */
+export function renderTransparentView(
+  parts: readonly RenderablePart[],
+  options: TransparentViewOptions = {},
+): string {
+  const userIds = options.userMessageIds;
+  const segments: string[] = [];
+  for (const p of parts) {
+    if (p.type === "text") {
+      const text = (p as { text?: string }).text;
+      const role = (p as { role?: string }).role;
+      const messageID = (p as { messageID?: string }).messageID;
+      if (typeof text !== "string") continue;
+      if (text.trim().length === 0) continue;
+      if (typeof role === "string" && role.toLowerCase() === "user") continue;
+      if (userIds && typeof messageID === "string" && userIds.has(messageID)) continue;
+      // Filter assistant prompt-echoes when we have a recent prompt to compare against.
+      if (options.lastUserPrompt && isPromptEcho(text, options.lastUserPrompt)) continue;
+      segments.push(commonmarkToTelegramHtml(text));
+    } else if (p.type === "reasoning") {
+      // Render reasoning dimmed (italic, smaller-feel via blockquote on
+      // Telegram). Reasoning is freeform agent thought; show it as
+      // metadata-flavored text without parsing markdown (it's often
+      // streaming, partial, and prone to broken markdown).
+      const text = (p as { text?: string }).text;
+      if (typeof text !== "string" || text.trim().length === 0) continue;
+      segments.push(`<blockquote expandable><i>${escapeHtml(text)}</i></blockquote>`);
+    } else if (p.type === "tool") {
+      // Render tool calls as a dimmed italic single line. Reuses the
+      // existing renderToolLine which produces MarkdownV2; we strip the
+      // MarkdownV2 escapes and re-escape for HTML to avoid double-escaping.
+      const md = renderToolLine(p);
+      if (md.length === 0) continue;
+      // renderToolLine output is `<emoji> <toolName> <code>arg</code> · meta`.
+      // For HTML mode, we re-build the line directly to avoid the two-pass
+      // escape dance.
+      segments.push(`<i>${renderToolLineAsHtml(p)}</i>`);
+    }
+  }
+
+  // Tail line:
+  //   - retryStatus: rate-limit banner
+  //   - final: ─ done ─
+  //   - elapsedSeconds: thinking · Ns elapsed
+  //   - else: thinking…
+  const tail = options.final
+    ? DONE_MARKER
+    : renderTransparentTail(options);
+  if (tail.length > 0) segments.push(tail);
+
+  return segments.join("\n\n");
+}
+
+function renderTransparentTail(options: TransparentViewOptions): string {
+  if (options.retryStatus) {
+    const { attempt, message, next } = options.retryStatus;
+    const now = options.retryStatus.now ?? Date.now();
+    const remainingSec = Math.max(0, Math.round((next - now) / 1000));
+    const truncated = message.length > 80 ? `${message.slice(0, 77)}…` : message;
+    const remainingLabel =
+      remainingSec === 0
+        ? "retrying now"
+        : `retry in ${formatDurationFromSecondsHtml(remainingSec)}`;
+    return `<i>⏳ ${escapeHtml(truncated)} · attempt ${attempt} · ${remainingLabel}</i>`;
+  }
+  if (options.elapsedSeconds != null) {
+    return `<i>thinking · ${formatDurationFromSecondsHtml(options.elapsedSeconds)} elapsed</i>`;
+  }
+  return "<i>thinking…</i>";
+}
+
+/** HTML version of formatDurationFromSeconds (which is private). */
+function formatDurationFromSecondsHtml(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+/**
+ * Render a tool part as HTML directly (vs renderToolLine which outputs
+ * MarkdownV2). Mirrors the same content shape — emoji + tool + arg + meta.
+ */
+function renderToolLineAsHtml(part: RenderablePart): string {
+  if (part.type !== "tool") return "";
+  const tp = part as { type: "tool"; tool: string; state: ToolState };
+  const isError = tp.state.status === "error";
+  const emoji = isError ? "❌" : toolEmoji(tp.tool);
+  const summary = summarizeToolInput(tp.tool, tp.state.input);
+  const meta = formatToolMeta(tp);
+  const head = `${emoji} ${escapeHtml(tp.tool)}`;
+  if (!summary) return meta ? `${head} · ${meta}` : head;
+  const safeForCode = summary.replace(/`/g, "'");
+  const arg = `<code>${escapeHtml(safeForCode)}</code>`;
+  return meta ? `${head} ${arg} · ${meta}` : `${head} ${arg}`;
+}
+
+/** Compose the trailing meta string ("124 lines", "0.2s", etc) without MarkdownV2 escapes. */
+function formatToolMeta(part: { tool: string; state: ToolState }): string {
+  const md = part.state.metadata as { lines?: number; matchCount?: number; exitCode?: number } | undefined;
+  const time = part.state.time as { start?: number; end?: number } | undefined;
+  const bits: string[] = [];
+  if (md && typeof md.lines === "number") bits.push(`${md.lines} lines`);
+  if (md && typeof md.matchCount === "number") bits.push(`${md.matchCount} matches`);
+  if (md && typeof md.exitCode === "number" && md.exitCode !== 0) bits.push(`exit ${md.exitCode}`);
+  if (time && typeof time.start === "number" && typeof time.end === "number") {
+    bits.push(formatDuration(time.end - time.start));
+  }
+  return bits.join(" · ");
 }
 
 /**

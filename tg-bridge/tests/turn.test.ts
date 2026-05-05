@@ -34,8 +34,10 @@ describe("Turn", () => {
     expect(bot.calls.edits).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(1000);
     expect(bot.calls.edits).toHaveLength(1);
-    // Text parts are hidden during streaming; only the thinking marker shows.
-    expect(bot.calls.edits[0]![2]).toBe("_thinking…_");
+    // Transparent view: prose IS shown live + thinking tail.
+    const text = String(bot.calls.edits[0]![2]);
+    expect(text).toContain("hello");
+    expect(text).toContain("<i>thinking…</i>");
   });
 
   it("absorbs rapid updates into a single edit per throttle window", async () => {
@@ -64,9 +66,12 @@ describe("Turn", () => {
     await vi.advanceTimersByTimeAsync(800);
     // After throttle window completes, exactly one edit reflecting the latest state.
     expect(bot.calls.edits).toHaveLength(1);
-    expect(bot.calls.edits[0]![2]).toBe(
-      "📄 read `a\\.py`\n⚡ bash `pwd`\n_thinking…_",
-    );
+    const text = String(bot.calls.edits[0]![2]);
+    expect(text).toContain("📄"); // read tool emoji
+    expect(text).toContain("a.py");
+    expect(text).toContain("⚡"); // bash tool emoji
+    expect(text).toContain("pwd");
+    expect(text).toContain("<i>thinking…</i>");
   });
 
   it("finalize edits placeholder with the final render and clears any pending timer", async () => {
@@ -74,44 +79,41 @@ describe("Turn", () => {
     const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
     turn.appendPart({ id: "p1", type: "text", text: "first" });
     await turn.finalize();
-    // The pending timer would have fired at +1000ms; finalize ran immediately.
+    // Transparent finalize = single edit with prose + done marker.
     expect(bot.calls.edits).toHaveLength(1);
-    // No tools used → final view is just the escaped text.
-    expect(bot.calls.edits[0]![2]).toBe("first");
+    const text = String(bot.calls.edits[0]![2]);
+    expect(text).toContain("first");
+    expect(text).toContain("─ done ─");
     // No follow-up edits after finalize
     await vi.advanceTimersByTimeAsync(5000);
     expect(bot.calls.edits).toHaveLength(1);
     expect(bot.calls.sends).toHaveLength(0);
   });
 
-  it("finalize splits long output: edits placeholder with first chunk, sends remaining as new messages", async () => {
+  it("finalize truncates very long content from the front", async () => {
     const bot = makeBot();
     const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
-    const para1 = "a".repeat(2000);
-    const para2 = "b".repeat(2000);
-    const para3 = "c".repeat(2000);
-    turn.appendPart({ id: "p1", type: "text", text: `${para1}\n\n${para2}\n\n${para3}` });
+    const huge = "z".repeat(8000);
+    turn.appendPart({ id: "p1", type: "text", text: huge });
     await turn.finalize();
     expect(bot.calls.edits).toHaveLength(1);
-    expect(bot.calls.sends.length).toBeGreaterThanOrEqual(1);
-    const allText =
-      (bot.calls.edits[0]![2] as string) +
-      bot.calls.sends.map((c) => c[1] as string).join("");
-    expect(allText).toContain(para1);
-    expect(allText).toContain(para2);
-    expect(allText).toContain(para3);
+    const text = String(bot.calls.edits[0]![2]);
+    expect(text.length).toBeLessThan(4096);
+    expect(text).toContain("─ done ─");
+    // Multi-send no longer used in transparent mode.
+    expect(bot.calls.sends).toHaveLength(0);
   });
 
-  it("finalize with no parts edits placeholder with a 'no response' marker", async () => {
+  it("finalize with no parts emits just the done marker", async () => {
     const bot = makeBot();
     const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
     await turn.finalize();
     expect(bot.calls.edits).toHaveLength(1);
-    // renderFinalView (HTML) returns "<i>(no response)</i>" for empty input.
-    expect(bot.calls.edits[0]![2]).toBe("<i>(no response)</i>");
+    // No parts → no segments except the done marker.
+    expect(bot.calls.edits[0]![2]).toBe("<i>─ done ─</i>");
   });
 
-  it("finalize includes a tool summary header when tools were used", async () => {
+  it("finalize renders tool + prose inline (no separate summary header)", async () => {
     const bot = makeBot();
     const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
     turn.appendPart({
@@ -123,9 +125,11 @@ describe("Turn", () => {
     turn.appendPart({ id: "p1", type: "text", text: "Working dir is /workspace." });
     await turn.finalize();
     expect(bot.calls.edits).toHaveLength(1);
-    expect(bot.calls.edits[0]![2]).toBe(
-      "<i>used 1 tool · 1 bash</i>\n\nWorking dir is /workspace.",
-    );
+    const text = String(bot.calls.edits[0]![2]);
+    expect(text).toContain("bash");
+    expect(text).toContain("pwd");
+    expect(text).toContain("Working dir is /workspace");
+    expect(text).toContain("─ done ─");
   });
 
   it("showError edits placeholder with the error text and prevents further edits", async () => {
@@ -228,20 +232,18 @@ describe("Turn idle watchdog", () => {
     turn.appendPart({ id: "p1", type: "text", text: "thinking..." });
     await vi.advanceTimersByTimeAsync(1500);
     expect(bot.calls.edits.length).toBeGreaterThan(0);
-    // First (streaming) edit hides text parts → "_thinking…_"
-    expect(bot.calls.edits[0]![2]).toBe("_thinking…_");
+    // Streaming edit before watchdog: NO done marker.
+    expect(String(bot.calls.edits[0]![2])).not.toContain("─ done ─");
     // No more parts arrive; advance past watchdog
     await vi.advanceTimersByTimeAsync(60000);
-    // Watchdog should have triggered finalize() — that produces a SECOND
-    // edit with the HTML final view, not the streaming placeholder.
+    // Watchdog should have triggered finalize() — that produces a final edit
+    // with the done marker.
     expect(bot.calls.edits.length).toBeGreaterThanOrEqual(2);
-    expect(bot.calls.edits[bot.calls.edits.length - 1]![2]).toBe("thinking...");
+    expect(String(bot.calls.edits[bot.calls.edits.length - 1]![2])).toContain("─ done ─");
     // After finalize, further parts are ignored
     turn.appendPart({ id: "p2", type: "text", text: "late" });
-    await vi.advanceTimersByTimeAsync(2000);
-    // Verify finalized state by checking that no edit fired for "late"
     const finalEditCount = bot.calls.edits.length;
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(4000);
     expect(bot.calls.edits.length).toBe(finalEditCount);
     vi.useRealTimers();
   });
@@ -258,15 +260,9 @@ describe("Turn idle watchdog", () => {
     turn.appendPart({ id: "p3", type: "text", text: "third" });
     await vi.advanceTimersByTimeAsync(2000);
     expect(bot.calls.edits.length).toBeGreaterThan(0);
-    // All edits so far must be the streaming view ("_thinking…_" or its
-    // heartbeat-decorated form "_thinking · Ns elapsed_"), never the final
-    // view — watchdog has not fired. If the watchdog had fired during those
-    // 100s, the placeholder would show the rendered final view (HTML).
+    // No edit so far should carry the done marker — watchdog has not fired.
     for (const call of bot.calls.edits) {
-      const text = call[2] as string;
-      expect(text.startsWith("_thinking")).toBe(true);
-      expect(text.endsWith("_")).toBe(true);
-      expect(text).not.toContain("<i>");
+      expect(String(call[2])).not.toContain("─ done ─");
     }
     vi.useRealTimers();
   });

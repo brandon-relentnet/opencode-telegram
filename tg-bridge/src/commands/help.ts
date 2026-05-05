@@ -18,6 +18,7 @@ const RAW = [
   "/sessions — recent sessions in this project (tap to switch)",
   "/pin — re-engage the pinned status message",
   "/unpin — pause auto-updates of the pinned status",
+  "/trace [N] — recent bridge events for this chat (debug)",
   "/help — show this message",
   "",
   "Send any other text to talk to the agent.",

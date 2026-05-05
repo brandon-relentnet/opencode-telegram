@@ -1,12 +1,10 @@
 import {
-  renderStreamingView,
-  renderFinalView,
+  renderTransparentView,
   escapeMarkdownV2,
   buildCancelKeyboard,
   type RenderablePart,
 } from "./format.js";
-import { chunkForTelegram } from "./chunker.js";
-import { safeEdit, safeSend } from "./safe-telegram.js";
+import { safeEdit } from "./safe-telegram.js";
 
 export interface TurnBot {
   editMessageText(
@@ -59,6 +57,12 @@ export interface TurnOptions {
    * on completion" for free.
    */
   cancelCallbackData?: string;
+  /**
+   * The user's most recent prompt text. Threaded into the renderer so
+   * assistant text-parts that just restate the user's question get
+   * filtered (see prompt-echo.ts).
+   */
+  lastUserPrompt?: string;
 }
 
 export class Turn {
@@ -91,6 +95,7 @@ export class Turn {
    * render the rate-limit banner instead of the normal thinking line.
    */
   private retryStatus: { attempt: number; message: string; next: number } | null = null;
+  private readonly lastUserPrompt: string | undefined;
 
   constructor(
     private bot: TurnBot,
@@ -104,6 +109,7 @@ export class Turn {
     this.startedAt = Date.now();
     this.lastEditAt = this.startedAt;
     this.cancelSessionId = options.cancelCallbackData?.replace(/^cancel:/, "");
+    this.lastUserPrompt = options.lastUserPrompt;
   }
 
   appendPart(part: IncomingPart): void {
@@ -194,6 +200,12 @@ export class Turn {
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
   }
 
+  /**
+   * Finalize the turn: append the "─ done ─" marker, do one last edit
+   * with the transparent view, then stop. No chunking, no separate final
+   * view — the streaming view IS the final view, just stabilized with a
+   * terminal marker so the user knows the turn is complete.
+   */
   async finalize(options: { userMessageIds?: Set<string> } = {}): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
@@ -202,23 +214,23 @@ export class Turn {
     this.cancelHeartbeat();
     if (this.inFlightEdit) await this.inFlightEdit.catch(() => undefined);
 
-    const text = renderFinalView(
+    const text = renderTransparentView(
       this.partsArray() as unknown as readonly RenderablePart[],
-      options.userMessageIds ? { userMessageIds: options.userMessageIds } : {},
+      {
+        ...(options.userMessageIds ? { userMessageIds: options.userMessageIds } : {}),
+        ...(this.lastUserPrompt ? { lastUserPrompt: this.lastUserPrompt } : {}),
+        final: true,
+      },
     );
-    const chunks = chunkForTelegram(text);
-    const first = chunks[0];
-    // renderFinalView always returns at least "_\(no response\)_" so chunks[0] should
-    // always exist; the guard is defensive against future renderer changes.
-    if (!first) return;
+    if (text.length === 0) return;
 
-    await safeEdit(this.bot, this.chatId, this.placeholderMessageId, first);
-    // safeSend returns null on persistent failure; we deliberately ignore it
-    // and continue with subsequent chunks. Partial delivery is preferred over
-    // no delivery if a single chunk fails to send.
-    for (const chunk of chunks.slice(1)) {
-      await safeSend(this.bot, this.chatId, chunk);
-    }
+    // Telegram caps at 4096 chars; if the full transparent view exceeds it,
+    // truncate from the FRONT (preserving most-recent activity + done marker).
+    // This is intentional vs. the prior chunk-and-multi-send approach: the
+    // user wants a single message that reflects current state, not a chain.
+    const safe = text.length > 4000 ? `<i>(truncated; older activity dropped)</i>\n${text.slice(text.length - 3900)}` : text;
+
+    await safeEdit(this.bot, this.chatId, this.placeholderMessageId, safe, undefined, "HTML");
   }
 
   private scheduleEdit(): void {
@@ -312,34 +324,37 @@ export class Turn {
     // Retry status takes priority over elapsed-seconds heartbeat. When the
     // agent is rate-limited, the user wants to see "⏳ retrying in Ns",
     // not a generic thinking counter.
-    const streamOptions: { retryStatus?: { attempt: number; message: string; next: number }; elapsedSeconds?: number } =
-      this.retryStatus != null
-        ? { retryStatus: this.retryStatus }
-        : elapsedSeconds != null
-          ? { elapsedSeconds }
-          : {};
-    const text = renderStreamingView(
+    const opts: {
+      retryStatus?: { attempt: number; message: string; next: number };
+      elapsedSeconds?: number;
+      lastUserPrompt?: string;
+    } = this.retryStatus != null
+      ? { retryStatus: this.retryStatus }
+      : elapsedSeconds != null
+        ? { elapsedSeconds }
+        : {};
+    if (this.lastUserPrompt) opts.lastUserPrompt = this.lastUserPrompt;
+    const text = renderTransparentView(
       this.partsArray() as unknown as readonly RenderablePart[],
-      streamOptions,
+      opts,
     );
     if (text.length === 0) return;
-    const [first] = chunkForTelegram(text);
-    if (!first) return;
+    const safe = text.length > 4000 ? `<i>(truncated; older activity dropped)</i>\n${text.slice(text.length - 3900)}` : text;
     // C2: attach the [⏹ Cancel] inline keyboard to every streaming edit
     // (and heartbeat tick) when a session ID was wired in.
     const replyMarkup = this.cancelSessionId
       ? buildCancelKeyboard(this.cancelSessionId)
       : undefined;
     try {
-      // Streaming view is MarkdownV2 (italic-marker `_thinking…_` + tool
-      // lines with inline code). Final view is HTML — see finalize().
+      // Transparent view is HTML throughout (was: MarkdownV2 for streaming,
+      // HTML for final). Single render path = single set of escape rules.
       await safeEdit(
         this.bot,
         this.chatId,
         this.placeholderMessageId,
-        first,
+        safe,
         undefined,
-        "MarkdownV2",
+        "HTML",
         replyMarkup,
       );
     } finally {
