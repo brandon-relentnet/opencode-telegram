@@ -241,7 +241,9 @@ describe("Turn idle watchdog", () => {
     // Watchdog should have triggered finalize() — that produces a final edit
     // with the done marker.
     expect(bot.calls.edits.length).toBeGreaterThanOrEqual(2);
-    expect(String(bot.calls.edits[bot.calls.edits.length - 1]![2])).toContain("─ done ─");
+    // Watchdog-triggered finalize emits "⚠️ stalled" not "─ done ─" so the
+    // user can distinguish "agent really finished" from "bridge gave up".
+    expect(String(bot.calls.edits[bot.calls.edits.length - 1]![2])).toContain("⚠️ stalled");
     // After finalize, further parts are ignored
     turn.appendPart({ id: "p2", type: "text", text: "late" });
     const finalEditCount = bot.calls.edits.length;

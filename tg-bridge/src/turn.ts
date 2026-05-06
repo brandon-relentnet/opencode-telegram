@@ -210,12 +210,20 @@ export class Turn {
   }
 
   /**
-   * Finalize the turn: append the "─ done ─" marker, do one last edit
-   * with the transparent view, then stop. No chunking, no separate final
-   * view — the streaming view IS the final view, just stabilized with a
-   * terminal marker so the user knows the turn is complete.
+   * Finalize the turn: append a terminal marker, do one last edit with the
+   * transparent view, then stop. The marker depends on `reason`:
+   *
+   *   - "idle" (default, opencode reported clean session.idle): "─ done ─"
+   *   - "watchdog" (no events for idleWatchdogMs; likely opencode crash or
+   *     SSE drop): "⚠️ stalled — no events for N minutes. opencode may
+   *     have crashed; check the web UI to confirm the agent's actual state."
+   *
+   * The distinction matters because the user can't otherwise tell whether
+   * the agent ACTUALLY finished or the bridge gave up. opencode crashes
+   * (OOM-kills under memory pressure) and SSE drops are common enough that
+   * silently rendering "─ done ─" in those cases is dishonest.
    */
-  async finalize(options: { userMessageIds?: Set<string> } = {}): Promise<void> {
+  async finalize(options: { userMessageIds?: Set<string>; reason?: "idle" | "watchdog" } = {}): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
     this.cancelTimer();
@@ -229,6 +237,7 @@ export class Turn {
         ...(options.userMessageIds ? { userMessageIds: options.userMessageIds } : {}),
         ...(this.lastUserPrompt ? { lastUserPrompt: this.lastUserPrompt } : {}),
         final: true,
+        ...(options.reason === "watchdog" ? { finalReason: "watchdog" as const } : {}),
       },
     );
     if (text.length === 0) return;
@@ -317,7 +326,7 @@ export class Turn {
     this.watchdogTimer = setTimeout(() => {
       this.watchdogTimer = null;
       if (this.finalized) return;
-      void this.finalize().catch(() => undefined);
+      void this.finalize({ reason: "watchdog" }).catch(() => undefined);
     }, this.idleWatchdogMs);
   }
 

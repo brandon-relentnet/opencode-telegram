@@ -862,3 +862,25 @@ describe("renderTransparentView", () => {
     expect(out).toContain("I should check the tests first");
   });
 });
+
+describe("renderTransparentView watchdog finalReason", () => {
+  it("emits stalled warning when finalReason is 'watchdog'", () => {
+    const out = renderTransparentView(
+      [{ type: "text", text: "partial answer", role: "assistant" }],
+      { final: true, finalReason: "watchdog" },
+    );
+    expect(out).toContain("partial answer");
+    expect(out).toContain("⚠️ stalled");
+    expect(out).toContain("opencode may have crashed");
+    expect(out).not.toContain("─ done ─");
+  });
+
+  it("default 'idle' finalReason emits done marker", () => {
+    const out = renderTransparentView(
+      [{ type: "text", text: "answer", role: "assistant" }],
+      { final: true },
+    );
+    expect(out).toContain("─ done ─");
+    expect(out).not.toContain("stalled");
+  });
+});

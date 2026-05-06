@@ -465,10 +465,21 @@ export interface TransparentViewOptions {
    */
   lastUserPrompt?: string | null;
   /**
-   * When true, append the "─ done ─" terminal marker so the user sees
-   * the turn has fully wrapped (vs still streaming).
+   * When true, append a terminal marker so the user sees the turn has
+   * fully wrapped (vs still streaming).
    */
   final?: boolean;
+  /**
+   * When `final` is true, controls which terminal marker is rendered.
+   *
+   *   - undefined / "idle" → "─ done ─" (clean opencode session.idle)
+   *   - "watchdog"        → "⚠️ stalled — no events for N min..."
+   *
+   * Set by the watchdog path so the user can distinguish a real
+   * agent-completed turn from a bridge-gave-up turn (e.g. when opencode
+   * crashed or SSE dropped mid-turn). See Turn.finalize for context.
+   */
+  finalReason?: "idle" | "watchdog";
   /**
    * If provided, replaces the static thinking placeholder when the agent
    * is still working (`final` is false). Used by Turn's heartbeat.
@@ -551,9 +562,17 @@ export function renderTransparentView(
   //   - else: thinking…
   let tail: string;
   if (options.final) {
-    tail = segments.length === 0
-      ? "<i>(no agent activity captured — opencode may still be working; check the web UI)</i>"
-      : DONE_MARKER;
+    if (options.finalReason === "watchdog") {
+      // Watchdog timer fired — opencode never sent session.idle, likely
+      // because the server crashed (OOM-kill is common on small VPS
+      // memory) or SSE was severed mid-turn. Tell the user explicitly
+      // so they don't mistake this for a clean finish.
+      tail = "<i>⚠️ stalled — no events for 5 min. opencode may have crashed or the connection dropped. Check the web UI to see the agent's actual final state.</i>";
+    } else if (segments.length === 0) {
+      tail = "<i>(no agent activity captured — opencode may still be working; check the web UI)</i>";
+    } else {
+      tail = DONE_MARKER;
+    }
   } else {
     tail = renderTransparentTail(options);
   }
