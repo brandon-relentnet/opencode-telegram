@@ -104,13 +104,15 @@ describe("Turn", () => {
     expect(bot.calls.sends).toHaveLength(0);
   });
 
-  it("finalize with no parts emits just the done marker", async () => {
+  it("finalize with no parts emits a 'no agent activity captured' notice (not bare done marker)", async () => {
     const bot = makeBot();
     const turn = new Turn(bot, 1, 50, { throttleMs: 1000 });
     await turn.finalize();
     expect(bot.calls.edits).toHaveLength(1);
-    // No parts → no segments except the done marker.
-    expect(bot.calls.edits[0]![2]).toBe("<i>─ done ─</i>");
+    // No parts → user gets a helpful explanation, not a bare "─ done ─".
+    const text = String(bot.calls.edits[0]![2]);
+    expect(text).toContain("no agent activity captured");
+    expect(text).toContain("opencode may still be working");
   });
 
   it("finalize renders tool + prose inline (no separate summary header)", async () => {

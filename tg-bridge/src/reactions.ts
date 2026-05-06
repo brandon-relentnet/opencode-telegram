@@ -36,11 +36,19 @@ async function react(
   }
 }
 
+// Telegram free-tier only allows ~70 specific emoji reactions. ✅, ❌, ⏸ are
+// NOT in that list — calling setMessageReaction with them returns
+// `400: Bad Request: REACTION_INVALID`. Replaced with semantically-similar
+// emojis that ARE in the free-tier allowlist:
+//   - 👍 processing (was 👍, still works)
+//   - 🎉 done       (was ✅, invalid → 🎉 in free list)
+//   - 😢 failed     (was ❌, invalid → 😢 in free list)
+//   - 🤷 cancelled  (was ⏸, invalid → 🤷 in free list)
 export const reactProcessing = (b: ReactionBot, c: number, m: number, l?: ReactionLogger) =>
   react(b, c, m, "👍", l);
 export const reactDone = (b: ReactionBot, c: number, m: number, l?: ReactionLogger) =>
-  react(b, c, m, "✅", l);
+  react(b, c, m, "🎉", l);
 export const reactFailed = (b: ReactionBot, c: number, m: number, l?: ReactionLogger) =>
-  react(b, c, m, "❌", l);
+  react(b, c, m, "😢", l);
 export const reactCancelled = (b: ReactionBot, c: number, m: number, l?: ReactionLogger) =>
-  react(b, c, m, "⏸", l);
+  react(b, c, m, "🤷", l);

@@ -33,7 +33,16 @@ export interface TurnOptions {
   /**
    * Idle watchdog: if no `appendPart` activity arrives for this long, the
    * Turn assumes opencode's `session.idle` event was lost (e.g. SSE stream
-   * dropped mid-turn) and self-finalizes. Default 60s. Reset on every part.
+   * dropped mid-turn) and self-finalizes. Default 5 minutes. Reset on
+   * every part.
+   *
+   * Why 5 min, not 60s: long-running tools (npm install, full builds,
+   * multi-step agent reasoning) can legitimately go silent for over a
+   * minute. A 60s watchdog produced the "— done —" empty-finalize bug
+   * where the bridge gave up before opencode finished a 112s multi-step
+   * turn. The original "stuck on thinking" bug this guards against
+   * happens when SSE genuinely drops + session.idle is lost; 5 min still
+   * catches that, just slower.
    */
   idleWatchdogMs?: number;
   /**
@@ -104,7 +113,7 @@ export class Turn {
     options: TurnOptions = {},
   ) {
     this.throttleMs = options.throttleMs ?? 1000;
-    this.idleWatchdogMs = options.idleWatchdogMs ?? 60_000;
+    this.idleWatchdogMs = options.idleWatchdogMs ?? 300_000;
     this.heartbeatMs = options.heartbeatMs ?? 10_000;
     this.startedAt = Date.now();
     this.lastEditAt = this.startedAt;

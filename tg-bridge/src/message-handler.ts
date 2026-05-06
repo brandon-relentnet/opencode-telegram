@@ -187,13 +187,20 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
     onPartUpdated(part) {
       const p = part as IncomingTextPart;
       if (typeof p.id === "string") {
+        const partType = p.type;
+        const tool = p.tool;
+        const textLen = typeof p.text === "string" ? p.text.length : undefined;
         deps.trace?.record(chatId, "part.updated", {
           sessionId,
           partId: p.id,
-          partType: p.type,
-          tool: p.tool,
-          textLen: typeof p.text === "string" ? p.text.length : undefined,
+          partType,
+          tool,
+          textLen,
         });
+        deps.log?.info?.(
+          { evt: "part.updated", chatId, sessionId, partId: p.id, partType, tool, textLen },
+          "part",
+        );
         turn.appendPart(p);
       }
     },
@@ -206,11 +213,16 @@ export async function handleTextMessage(ctx: Context, deps: MessageHandlerDeps):
           type: s.type,
           attempt: s.attempt,
         });
+        deps.log?.info?.(
+          { evt: "session.status", chatId, sessionId, type: s.type, attempt: s.attempt },
+          "session.status",
+        );
         turn.setSessionStatus(status);
       }
     },
     async onIdle() {
       deps.trace?.record(chatId, "session.idle", { sessionId });
+      deps.log?.info?.({ evt: "session.idle", chatId, sessionId }, "session.idle");
       try {
         await turn.finalize({ userMessageIds });
       } catch (err) {

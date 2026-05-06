@@ -15,25 +15,25 @@ describe("reactions module", () => {
       { type: "emoji", emoji: "👍" },
     ]);
   });
-  it("reactDone sets ✅", async () => {
+  it("reactDone sets 🎉 (Telegram-free-tier-valid; ✅ returns REACTION_INVALID)", async () => {
     const bot = makeBot();
     await reactDone(bot as never, 1, 50);
     expect(bot.api.setMessageReaction).toHaveBeenCalledWith(1, 50, [
-      { type: "emoji", emoji: "✅" },
+      { type: "emoji", emoji: "🎉" },
     ]);
   });
-  it("reactFailed sets ❌", async () => {
+  it("reactFailed sets 😢 (Telegram-free-tier-valid; ❌ returns REACTION_INVALID)", async () => {
     const bot = makeBot();
     await reactFailed(bot as never, 1, 50);
     expect(bot.api.setMessageReaction).toHaveBeenCalledWith(1, 50, [
-      { type: "emoji", emoji: "❌" },
+      { type: "emoji", emoji: "😢" },
     ]);
   });
-  it("reactCancelled sets ⏸", async () => {
+  it("reactCancelled sets 🤷 (Telegram-free-tier-valid; ⏸ returns REACTION_INVALID)", async () => {
     const bot = makeBot();
     await reactCancelled(bot as never, 1, 50);
     expect(bot.api.setMessageReaction).toHaveBeenCalledWith(1, 50, [
-      { type: "emoji", emoji: "⏸" },
+      { type: "emoji", emoji: "🤷" },
     ]);
   });
   it("swallows API errors silently", async () => {

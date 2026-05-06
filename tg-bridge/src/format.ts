@@ -543,12 +543,20 @@ export function renderTransparentView(
 
   // Tail line:
   //   - retryStatus: rate-limit banner
-  //   - final: ─ done ─
+  //   - final: ─ done ─, OR a "no parts received" notice if there's
+  //     nothing else to render (watchdog fired before any part arrived,
+  //     or SSE missed the whole turn). The notice is more useful than a
+  //     bare "─ done ─" floating in the chat with no context.
   //   - elapsedSeconds: thinking · Ns elapsed
   //   - else: thinking…
-  const tail = options.final
-    ? DONE_MARKER
-    : renderTransparentTail(options);
+  let tail: string;
+  if (options.final) {
+    tail = segments.length === 0
+      ? "<i>(no agent activity captured — opencode may still be working; check the web UI)</i>"
+      : DONE_MARKER;
+  } else {
+    tail = renderTransparentTail(options);
+  }
   if (tail.length > 0) segments.push(tail);
 
   return segments.join("\n\n");
