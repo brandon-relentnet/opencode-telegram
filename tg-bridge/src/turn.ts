@@ -105,6 +105,17 @@ export class Turn {
    */
   private retryStatus: { attempt: number; message: string; next: number } | null = null;
   private readonly lastUserPrompt: string | undefined;
+  /**
+   * Unix-ms timestamp of the most recent appendPart call. Used to detect
+   * when the agent is "settled" — its last act was a text response and
+   * nothing else has arrived for a few seconds. opencode's session.idle
+   * can lag the actual end of streaming by 30-60s while it does
+   * server-side bookkeeping; during that window the heartbeat-elapsed
+   * tail ("thinking · 47s elapsed") feels wrong because the agent has
+   * visibly stopped writing. We use this to switch the tail to
+   * "wrapping up · Ns" instead.
+   */
+  private lastPartArrivalAt = 0;
 
   constructor(
     private bot: TurnBot,
@@ -125,6 +136,7 @@ export class Turn {
     if (this.finalized) return;
     if (!this.parts.has(part.id)) this.partOrder.push(part.id);
     this.parts.set(part.id, part);
+    this.lastPartArrivalAt = Date.now();
     this.scheduleEdit();
     this.resetWatchdog();
     this.ensureHeartbeat();
@@ -337,6 +349,24 @@ export class Turn {
     }
   }
 
+  /**
+   * "Settled" = agent's last act was producing a substantial assistant
+   * text part AND nothing else has arrived for ≥3 seconds. opencode often
+   * lingers in the busy state for tens of seconds after the actual answer
+   * is done (server-side message-completion bookkeeping); during that
+   * window we shouldn't keep telling the user "thinking · 47s elapsed".
+   */
+  private isAgentSettled(): boolean {
+    if (this.parts.size === 0) return false;
+    if (Date.now() - this.lastPartArrivalAt < 3000) return false;
+    const lastPartId = this.partOrder[this.partOrder.length - 1];
+    if (!lastPartId) return false;
+    const last = this.parts.get(lastPartId);
+    if (!last || last.type !== "text") return false;
+    const text = (last as { text?: string }).text;
+    return typeof text === "string" && text.trim().length >= 20;
+  }
+
   private async editNow(elapsedSeconds?: number): Promise<void> {
     if (this.finalized) return;
     // Retry status takes priority over elapsed-seconds heartbeat. When the
@@ -346,11 +376,16 @@ export class Turn {
       retryStatus?: { attempt: number; message: string; next: number };
       elapsedSeconds?: number;
       lastUserPrompt?: string;
+      settled?: boolean;
     } = this.retryStatus != null
       ? { retryStatus: this.retryStatus }
       : elapsedSeconds != null
         ? { elapsedSeconds }
         : {};
+    // Settled signal — flip the tail from "thinking" to "wrapping up" so
+    // the user knows the agent has visibly finished even though opencode
+    // hasn't sent session.idle yet.
+    if (this.retryStatus == null && this.isAgentSettled()) opts.settled = true;
     if (this.lastUserPrompt) opts.lastUserPrompt = this.lastUserPrompt;
     const text = renderTransparentView(
       this.partsArray() as unknown as readonly RenderablePart[],

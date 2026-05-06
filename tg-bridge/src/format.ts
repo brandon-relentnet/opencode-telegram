@@ -494,6 +494,15 @@ export interface TransparentViewOptions {
     next: number;
     now?: number;
   };
+  /**
+   * "Agent has visibly finished writing but opencode hasn't fired
+   * session.idle yet." When true, the tail line shows "wrapping up · Ns
+   * elapsed" instead of "thinking · Ns elapsed" so the user understands
+   * the bridge is just waiting for opencode bookkeeping. Set by Turn
+   * when the latest part is a non-trivial text part and ≥3s have passed
+   * since the last part arrival.
+   */
+  settled?: boolean;
 }
 
 const DONE_MARKER = "<i>─ done ─</i>";
@@ -592,6 +601,15 @@ function renderTransparentTail(options: TransparentViewOptions): string {
         ? "retrying now"
         : `retry in ${formatDurationFromSecondsHtml(remainingSec)}`;
     return `<i>⏳ ${escapeHtml(truncated)} · attempt ${attempt} · ${remainingLabel}</i>`;
+  }
+  if (options.settled) {
+    // Agent has visibly stopped writing; opencode is just doing post-message
+    // bookkeeping before firing session.idle. Don't tell the user the agent
+    // is "thinking" — they can see it isn't.
+    if (options.elapsedSeconds != null) {
+      return `<i>wrapping up · ${formatDurationFromSecondsHtml(options.elapsedSeconds)} elapsed</i>`;
+    }
+    return "<i>wrapping up…</i>";
   }
   if (options.elapsedSeconds != null) {
     return `<i>thinking · ${formatDurationFromSecondsHtml(options.elapsedSeconds)} elapsed</i>`;

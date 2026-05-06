@@ -884,3 +884,41 @@ describe("renderTransparentView watchdog finalReason", () => {
     expect(out).not.toContain("stalled");
   });
 });
+
+describe("renderTransparentView settled state", () => {
+  it("shows 'wrapping up · Ns elapsed' when settled with heartbeat", () => {
+    const out = renderTransparentView(
+      [{ type: "text", text: "the answer is 42", role: "assistant" }],
+      { settled: true, elapsedSeconds: 30 },
+    );
+    expect(out).toContain("wrapping up · 30s elapsed");
+    expect(out).not.toContain("thinking");
+  });
+
+  it("shows 'wrapping up…' when settled without elapsed", () => {
+    const out = renderTransparentView(
+      [{ type: "text", text: "answer", role: "assistant" }],
+      { settled: true },
+    );
+    expect(out).toContain("wrapping up…");
+    expect(out).not.toContain("thinking");
+  });
+
+  it("retry banner takes priority over settled", () => {
+    const out = renderTransparentView(
+      [{ type: "text", text: "x", role: "assistant" }],
+      { settled: true, retryStatus: { attempt: 1, message: "msg", next: 1, now: 0 } },
+    );
+    expect(out).toContain("⏳");
+    expect(out).not.toContain("wrapping up");
+  });
+
+  it("settled has no effect when final=true", () => {
+    const out = renderTransparentView(
+      [{ type: "text", text: "answer", role: "assistant" }],
+      { settled: true, final: true },
+    );
+    expect(out).toContain("─ done ─");
+    expect(out).not.toContain("wrapping up");
+  });
+});
